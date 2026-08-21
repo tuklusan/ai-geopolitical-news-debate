@@ -1,7 +1,7 @@
 # Live News Debate Wall
 
 [![CI](https://github.com/tuklusan/ai-geopolitical-news-debate/actions/workflows/ci.yml/badge.svg)](https://github.com/tuklusan/ai-geopolitical-news-debate/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/github/v/release/tuklusan/ai-geopolitical-news-debate?sort=semver)](https://github.com/tuklusan/ai-geopolitical-news-debate/releases/latest)
+[![Release](https://img.shields.io/github/v/release/tuklusan/ai-geopolitical-news-debate?sort=semver&display_name=tag&cacheSeconds=300)](https://github.com/tuklusan/ai-geopolitical-news-debate/releases/latest)
 [![Python](https://img.shields.io/badge/python-3.12%20%7C%203.13-blue)](https://www.python.org/)
 [![Licence](https://img.shields.io/badge/licence-SANYALnet%20Non--Commercial-lightgrey)](LICENSE)
 
