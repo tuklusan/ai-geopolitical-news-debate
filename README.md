@@ -59,10 +59,10 @@ Settings come from the process environment first, then `config/.env`, then these
 
 | Setting | Default | What it does |
 |---|---|---|
-| `LLM_BASE_URL` | `https://integrate.api.nvidia.com/v1` | Any OpenAI-compatible endpoint. Falls back to `BASE_URL`. |
-| `LLM_MODEL` | `nvidia/nemotron-mini-4b-instruct` | Model name. The original `z-ai/glm-5.2` was retired — see [Choosing a model](#choosing-a-model). |
+| `LLM_BASE_URL` | `https://openrouter.ai/api/v1` | Any OpenAI-compatible endpoint. Falls back to `BASE_URL`. |
+| `LLM_MODEL` | `z-ai/glm-5.2` | Model name. See [Choosing a model](#choosing-a-model). |
 | `LLM_API_KEY` | *(none)* | Required for generation. Falls back to `API_KEY`. Never logged or stored. |
-| `LLM_TEMPERATURE` / `LLM_MAX_TOKENS` | `0.55` / `140` | Sampling and length. |
+| `LLM_TEMPERATURE` / `LLM_MAX_TOKENS` | `0.55` / `400` | Sampling, and the token budget per request. |
 | `LLM_TIMEOUT_SECONDS` | `90` | Per-request timeout. |
 | `MESSAGE_MIN_DELAY_SECONDS` / `MESSAGE_MAX_DELAY_SECONDS` | `3` / `6` | Pacing before **every** model attempt, retries included. |
 | `TOPIC_TURNS_MIN` / `TOPIC_TURNS_MAX` | `8` / `12` | How long one headline is discussed before moving on. |
@@ -75,34 +75,27 @@ Settings come from the process environment first, then `config/.env`, then these
 
 ## Choosing a model
 
-> **The model this project was built with is gone.** `z-ai/glm-5.2` was retired by NVIDIA on **21 August 2026** and now returns `HTTP 410 Gone`. The blog post and `BUILD_NOTES.md` still name it, because that is what was used at the time. You do not need it.
+The wall ships pointed at **`z-ai/glm-5.2` on OpenRouter** — the same model the blog post was written with. Get a key at [openrouter.ai](https://openrouter.ai), put it in `LLM_API_KEY`, and you are done.
 
-The wall talks to any **OpenAI-compatible** chat-completions endpoint, so you have three sensible options.
+> **Why OpenRouter and not NVIDIA?** The project was originally built against NVIDIA's endpoint, which is what `BUILD_NOTES.md` and the blog describe. NVIDIA **retired `z-ai/glm-5.2` on 21 August 2026** and it now returns `HTTP 410 Gone`; no GLM model remains there. OpenRouter still serves the identical model, so only the endpoint changed.
 
-**1. Use the default.** `nvidia/nemotron-mini-4b-instruct` on NVIDIA's endpoint is what ships, and it was verified working. It is small and fast, and its persona writing is noticeably weaker than the blog's — expect flatter voices and more repetition. Fine for checking the thing runs.
+Any OpenAI-compatible endpoint works — set `LLM_BASE_URL`, `LLM_MODEL`, and `LLM_API_KEY` and nothing else needs touching. Three things are worth knowing before you switch:
 
-**2. Use a larger GLM model via another provider**, which gets you closest to the original. For example OpenRouter:
+**Leave `LLM_MAX_TOKENS` generous.** GLM-5.2 spends part of its budget on reasoning tokens before the visible reply. At the old default of 140 roughly a third of turns came back truncated mid-sentence and were discarded; at 400 truncation disappeared entirely. This does not make messages longer — the validator still enforces each persona's word limit — it just leaves room for the model to think first.
 
-```dotenv
-LLM_BASE_URL=https://openrouter.ai/api/v1
-LLM_MODEL=z-ai/glm-4.6
-LLM_API_KEY=your-key-here
-```
+**Avoid models that return `content: null`.** Some reasoning models put the whole answer in a separate `reasoning` field and leave `content` empty. Every turn then looks like a failure and the wall stays silent. `nvidia/llama-3.3-nemotron-super-49b-v1.5` behaves this way.
 
-**3. Use anything else you already pay for.** Set `LLM_BASE_URL`, `LLM_MODEL`, and `LLM_API_KEY` to your provider. Nothing in the code is provider-specific.
+**Avoid very slow models.** Turns are generated one at a time, so a model that takes a minute to first token produces a wall that barely moves. Keep `LLM_TIMEOUT_SECONDS` near 90 so a stalled request is abandoned instead of blocking the conversation.
 
-Two things to avoid when picking:
+Small models are a poor fit for this particular job: they hold the personas badly and repeat themselves. If you want cheap, `z-ai/glm-4.7-flash` is far better value than a 4B model.
 
-- **Reasoning models that return `content: null`.** Several put their answer in a separate `reasoning` field and leave `content` empty; the wall will treat every turn as a failure and show nothing. `nvidia/llama-3.3-nemotron-super-49b-v1.5` behaves this way.
-- **Very slow models.** One turn is generated at a time, so a model that takes a minute to first token produces a wall that barely moves. Keep `LLM_TIMEOUT_SECONDS` near the default of 90 so a stalled request is abandoned rather than blocking the conversation.
-
-To see what your key can actually reach:
+To see what your key can reach:
 
 ```bash
 curl -s $LLM_BASE_URL/models -H "Authorization: Bearer $LLM_API_KEY"
 ```
 
-If generation is failing, the log says why — the wall keeps serving, keeps polling RSS, and reports the model as degraded rather than crashing.
+If generation fails, the log says why. The wall keeps serving, keeps polling RSS, and reports the model as degraded rather than crashing.
 
 ## How it works
 
