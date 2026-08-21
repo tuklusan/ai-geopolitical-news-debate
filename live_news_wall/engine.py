@@ -32,7 +32,7 @@ import aiohttp
 
 from .database import Database, QueuedItem, StoredTopic
 from .feed import FeedClient, FeedItem
-from .llm_client import LLMClient
+from .llm_client import LLMClient, MAX_CONTEXT_LINES, MAX_PRIOR_POINTS
 from .personas import Persona, PERSONAS, persona_keys
 from .validator import ValidationResult, validate_output, repair_instruction
 
@@ -44,10 +44,12 @@ SPEAKER_HEAVY_USE = 3
 SPEAKER_DAMPED_WEIGHT = 0.25
 SPEAKER_NORMAL_WEIGHT = 1.0
 
-# How many prior visible turns are sent to the model as context.
-CONTEXT_TURNS = 12
-# How many distinct points are remembered per topic.
-MAX_TOPIC_POINTS = 20
+# How many prior visible turns are kept as context, and how many stored
+# points are remembered per topic. Both are taken from llm_client, which
+# also truncates to them when building the prompt: defining them twice let
+# the two modules disagree silently.
+CONTEXT_TURNS = MAX_CONTEXT_LINES
+MAX_TOPIC_POINTS = MAX_PRIOR_POINTS
 # Topics that may not be immediately revisited.
 NO_REVISIT_RECENT = 3
 
@@ -67,7 +69,17 @@ DEFAULT_TRANSCRIPT_RETENTION = 5000
 # Validation reasons that indicate the provider itself failed, as opposed to
 # the model returning something that was merely rejected.
 PROVIDER_FAILURE_REASONS = frozenset(
-    {"model unavailable", "no model output", "no repair output"}
+    {
+        "model unavailable",
+        "no model output",
+        "no repair output",
+        # A 200 response carrying no text at all is the endpoint failing,
+        # not the model answering in the wrong style. Reasoning models that
+        # return content=null land here; without them the wall would report
+        # "Model: ok" for ever while producing nothing at all.
+        "empty output",
+        "empty output (None)",
+    }
 )
 
 

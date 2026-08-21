@@ -1658,3 +1658,88 @@ class TestDocumentedCommandsExist:
         for name in ("BUILD_NOTES.md", "manual.md"):
             head = (root / name).read_text(encoding="utf-8")[:200]
             assert "Historical document" in head, f"{name} must say it is historical"
+
+
+class TestDocumentedNumbersAreTrue:
+    """Numbers quoted in the README must match reality, not a past state."""
+
+    def test_readme_test_count_matches_the_suite(self, request):
+        """The count under '## Tests' drifts every time a test is added, so
+        assert it rather than trusting anyone to remember."""
+        import re
+
+        cfg = request.config
+        filtered = bool(getattr(cfg.option, "keyword", "")
+                        or getattr(cfg.option, "markexpr", "")
+                        or getattr(cfg.option, "last_failed", False))
+        if filtered:
+            pytest.skip("count is only meaningful for an unfiltered run")
+
+        root = pathlib.Path(__file__).resolve().parents[1]
+        readme = (root / "README.md").read_text(encoding="utf-8")
+        section = readme.split("## Tests", 1)[1]
+        claimed = int(re.search(r"(\d+) tests", section).group(1))
+        collected = request.session.testscollected
+        assert claimed == collected, (
+            f"README claims {claimed} tests; the suite collects {collected}. "
+            "Update the number under '## Tests'."
+        )
+
+    def test_readme_runner_claim_matches_the_ci_matrix(self):
+        """'all eight runner images' must be eight in ci.yml."""
+        import re
+
+        root = pathlib.Path(__file__).resolve().parents[1]
+        ci = (root / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+        block = ci.split("        os:", 1)[1].split("        python:", 1)[0]
+        images = re.findall(r"^\s+- (\S+)", block, re.M)
+        readme = (root / "README.md").read_text(encoding="utf-8")
+        words = {"eight": 8, "seven": 7, "nine": 9, "six": 6, "five": 5}
+        m = re.search(r"all (\w+) GitHub-hosted runner images", readme)
+        assert m, "README no longer states a runner count"
+        assert words[m.group(1)] == len(images), (
+            f"README says {m.group(1)} images; ci.yml lists {len(images)}: {images}"
+        )
+
+
+class TestEmptyModelOutputIsAProviderFailure:
+    """A 200 with no text must not be reported as a healthy model."""
+
+    def test_null_content_extracts_to_empty(self):
+        from live_news_wall.llm_client import _extract_text
+
+        assert _extract_text({"choices": [{"message": {"content": None}}]}) == ""
+
+    def test_empty_output_counts_as_a_provider_failure(self):
+        from live_news_wall.engine import PROVIDER_FAILURE_REASONS
+
+        assert "empty output" in PROVIDER_FAILURE_REASONS
+        assert "empty output (None)" in PROVIDER_FAILURE_REASONS
+
+    @pytest.mark.asyncio
+    async def test_model_reported_unhealthy_when_it_only_returns_nothing(self, db):
+        """Reproduces a reasoning model: HTTP 200, content null, every time."""
+        class NullContentLLM:
+            calls = 0
+
+            async def generate(self, *a, **k):
+                NullContentLLM.calls += 1
+                return ""       # what _extract_text yields for content=null
+
+        feed = ListFeed([FeedItem("H.", "http://a", "s")])
+        eng = make_engine(db, NullContentLLM(), feed)
+        await eng.refresh_feed()
+        eng._model_healthy = True
+        produced = await eng._produce_message()
+        assert produced is False
+        assert eng.model_healthy is False, (
+            "a model that only ever returns empty text must not read as healthy"
+        )
+
+
+class TestSharedLimitsAgree:
+    def test_context_and_point_limits_are_single_sourced(self):
+        from live_news_wall import engine, llm_client
+
+        assert engine.CONTEXT_TURNS == llm_client.MAX_CONTEXT_LINES
+        assert engine.MAX_TOPIC_POINTS == llm_client.MAX_PRIOR_POINTS
