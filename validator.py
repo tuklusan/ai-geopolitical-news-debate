@@ -100,7 +100,10 @@ def _looks_structured(text: str) -> Optional[str]:
     if _YAML_KEY_RE.match(text) and ":" in text and "\n" in text:
         lines = [ln for ln in text.splitlines() if ln.strip()]
         if len(lines) >= 2 and all(":" in ln for ln in lines[:3]):
-            if not any(ln.strip().endswith(_TERMINATORS) for ln in lines[:3]):
+            # tuple(), not the bare string: str.endswith with a string tests
+            # for that whole sequence, so this guard never fired and prose
+            # laid out as "Topic: point." lines was rejected as YAML.
+            if not any(ln.strip().endswith(tuple(_TERMINATORS)) for ln in lines[:3]):
                 return "resembles YAML"
     return None
 
@@ -122,10 +125,6 @@ def _ends_mid_sentence(text: str) -> bool:
 
 def _word_count(text: str) -> int:
     return len([w for w in text.split() if w])
-
-
-def _line_count(text: str) -> int:
-    return len([ln for ln in text.splitlines() if ln.strip()])
 
 
 def _gronk_valid(text: str) -> Tuple[bool, str]:

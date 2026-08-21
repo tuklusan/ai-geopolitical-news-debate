@@ -25,6 +25,7 @@ These cover the defects found after the first release:
 import asyncio
 import os
 import pathlib
+import sqlite3
 import sys
 from dataclasses import dataclass
 from typing import List
@@ -1393,3 +1394,36 @@ class TestBoundedGrowth:
         monkeypatch.setenv("LOG_BACKUP_COUNT", "-1")
         with pytest.raises(ConfigError):
             load_config("does-not-exist.env")
+
+
+class TestPruningIndependence:
+    """A failure pruning one table must not skip the other."""
+
+    @pytest.mark.asyncio
+    async def test_transcript_still_pruned_when_feed_prune_fails(self, db):
+        for i in range(300):
+            await db.add_message("potus", f"Old {i}.", topic_id=1)
+
+        async def boom(*_a, **_k):
+            raise sqlite3.OperationalError("database is locked")
+
+        feed = ListFeed([FeedItem("H.", "http://a", "s", guid="G")])
+        eng = make_engine(db, CountingLLM(), feed, transcript_retention_messages=120)
+        with patch.object(db, "prune_feed_items", boom):
+            await eng.refresh_feed()
+        remaining = await db.get_messages(limit=1000)
+        assert len(remaining) <= 120, "feed-prune failure must not skip the transcript"
+
+    @pytest.mark.asyncio
+    async def test_feed_still_pruned_when_transcript_prune_fails(self, db):
+        for i in range(40):
+            await db.add_known_item(f"http://old.com/{i}", f"Old {i}", "s")
+
+        async def boom(*_a, **_k):
+            raise sqlite3.OperationalError("database is locked")
+
+        feed = ListFeed([FeedItem("H.", "http://a", "s", guid="G")])
+        eng = make_engine(db, CountingLLM(), feed, feed_retention_items=10)
+        with patch.object(db, "prune_transcript", boom):
+            await eng.refresh_feed()          # must not raise
+        assert await db.count_feed_items() <= 11

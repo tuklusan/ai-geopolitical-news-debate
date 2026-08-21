@@ -27,7 +27,11 @@ Foreground launch:
     python live_news_wall.py
 
 Background launch:
-    nohup python live_news_wall.py > live_news_wall.log 2>&1 &
+    nohup python live_news_wall.py > /dev/null 2>&1 &
+
+Send stdout to /dev/null rather than to live_news_wall.log: the application
+writes and rotates that file itself, and a shell redirect to the same name
+would fight the rotation for it.
 
 Configuration is read from config/.env (see config/.env.example).
 """

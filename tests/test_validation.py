@@ -163,3 +163,63 @@ class TestStripFences:
 
     def test_no_fence_unchanged(self):
         assert strip_fences("hello world.") == "hello world."
+
+
+class TestYamlGuardRegression:
+    """The YAML heuristic must not reject ordinary prose.
+
+    `str.endswith(_TERMINATORS)` tested for the whole terminator string
+    rather than any one of its characters, so the "these lines end in
+    real punctuation, they are sentences" escape hatch never fired.
+    """
+
+    def test_colon_prose_ending_in_periods_is_accepted(self):
+        text = "Trade: the real question is jobs.\nGrowth: it follows investment."
+        r = validate_output(text, PERSONAS["potus"])
+        assert r.ok, r.reason
+
+    def test_colon_prose_ending_in_other_terminators_is_accepted(self):
+        for ending in ("!", "?", '"'):
+            text = f"Jobs: they are coming back{ending}\nTrade: it is working{ending}"
+            r = validate_output(text, PERSONAS["potus"])
+            assert r.ok, f"{ending!r} rejected: {r.reason}"
+
+    def test_genuine_yaml_is_still_rejected(self):
+        text = "speaker: potus\ntext: The economy is strong\nanalysis: positive"
+        assert not validate_output(text, PERSONAS["potus"]).ok
+
+    def test_terminators_are_matched_per_character(self):
+        from validator import _TERMINATORS
+
+        assert "Ends with a period.".endswith(tuple(_TERMINATORS))
+        assert not "Ends with a period.".endswith(_TERMINATORS)
+
+
+class TestPersonaRegistryConsistency:
+    """persona_keys() is hand-written; PERSONAS is the source of truth.
+
+    If the two ever diverge a persona silently stops speaking and vanishes
+    from the speaker panel, with nothing failing.
+    """
+
+    def test_keys_match_the_registry(self):
+        from personas import PERSONAS, persona_keys
+
+        assert list(persona_keys()) == list(PERSONAS.keys())
+        assert set(persona_keys()) == set(PERSONAS)
+
+    def test_every_persona_is_completely_specified(self):
+        from personas import PERSONAS
+
+        for key, p in PERSONAS.items():
+            assert p.key == key, f"{key} disagrees with its registry key"
+            assert p.display_name and p.role and p.style and p.avatar
+            assert p.max_words > 0
+            assert p.system_prompt.strip()
+
+    def test_public_info_covers_every_persona(self):
+        from personas import PERSONAS, persona_public_info
+
+        info = persona_public_info()
+        assert len(info) == len(PERSONAS)
+        assert {i["key"] for i in info} == set(PERSONAS)

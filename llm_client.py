@@ -107,7 +107,7 @@ class LLMClient:
         model: str,
         api_key: str,
         temperature: float = 0.55,
-        max_tokens: int = 140,
+        max_tokens: int = 400,
         timeout_seconds: float = 90.0,
     ):
         self._base_url = base_url.rstrip("/")

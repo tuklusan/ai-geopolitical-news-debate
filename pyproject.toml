@@ -18,11 +18,14 @@ version = "0.1.0"
 requires-python = ">=3.12"
 dependencies = [
     "aiohttp>=3.9,<4.0",
-    "aiohttp-cors>=0.7",
     "beautifulsoup4>=4.12",
+    # Required indirectly: BeautifulSoup uses lxml as the "xml" parser.
     "lxml>=5.0",
+    "python-dotenv>=1.0",
+]
+
+[project.optional-dependencies]
+test = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
-    "python-dotenv>=1.0",
-    "pyyaml>=6.0.3",
 ]

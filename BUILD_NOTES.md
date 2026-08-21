@@ -283,8 +283,12 @@ python live_news_wall.py
 ## Background Launch Command
 
 ```bash
-nohup python live_news_wall.py > live_news_wall.log 2>&1 &
+nohup python live_news_wall.py > /dev/null 2>&1 &
 ```
+
+The application writes and rotates `live_news_wall.log` itself, so the shell
+redirect goes to `/dev/null`; pointing it at the same filename would put two
+writers on one file.
 
 ## systemd Instructions
 

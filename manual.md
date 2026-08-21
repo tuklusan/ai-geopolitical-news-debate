@@ -309,8 +309,12 @@ The server starts on `http://0.0.0.0:8765/` by default. Open
 ### Background launch
 
 ```bash
-nohup python live_news_wall.py > live_news_wall.log 2>&1 &
+nohup python live_news_wall.py > /dev/null 2>&1 &
 ```
+
+The application writes and rotates `live_news_wall.log` itself, so the
+shell redirect goes to `/dev/null`; pointing it at the same filename
+would put two writers on one file.
 
 To stop a background process:
 

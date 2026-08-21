@@ -116,10 +116,6 @@ def persona_keys() -> list:
     return ["potus", "eu", "gronk", "yoda"]
 
 
-def get_persona(key: str) -> Persona:
-    return PERSONAS[key]
-
-
 def persona_public_info() -> list:
     """Return persona info safe to display in the sidebar."""
     return [

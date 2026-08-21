@@ -218,7 +218,7 @@ class ConversationEngine:
             # while the feed is down, so skipping this would let the
             # transcript grow unbounded for exactly as long as the outage
             # lasts.
-            await self._prune_feed_items()
+            await self._prune_storage()
             return
         self._rss_healthy = True
 
@@ -244,7 +244,17 @@ class ConversationEngine:
                 await self._advance_topic()
             else:
                 logger.debug("RSS refresh: no new items; topic unchanged.")
+        await self._prune_storage()
+
+    async def _prune_storage(self) -> None:
+        """Bound everything the wall persists.
+
+        The two prunes are independent: a failure in one must not skip the
+        other, or a transient error on the feed table would silently leave
+        the transcript growing without limit.
+        """
         await self._prune_feed_items()
+        await self._prune_transcript()
 
     async def _prune_feed_items(self) -> None:
         """Keep the stored feed bounded so it cannot grow without limit."""
@@ -256,7 +266,6 @@ class ConversationEngine:
             return
         if removed:
             logger.info("Pruned %d stored feed item(s), keeping the newest %d.", removed, keep)
-        await self._prune_transcript()
 
     async def _prune_transcript(self) -> None:
         """Bound the transcript and its dependent tables."""

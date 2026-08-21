@@ -13,7 +13,7 @@
 # ============================================================================
 
 aiohttp>=3.9,<4.0
-aiohttp-cors>=0.7
 beautifulsoup4>=4.12
+# lxml is required indirectly: BeautifulSoup uses it as the "xml" parser.
 lxml>=5.0
 python-dotenv>=1.0

@@ -110,7 +110,7 @@ Any OpenAI-compatible endpoint works — set `LLM_BASE_URL`, `LLM_MODEL`, and `L
 
 **Watch for reasoning leaking into the reply.** A model that thinks out loud in `content` blows straight through the per-persona word limits and every turn is rejected. That is what happened to `nemotron-3-super-120b` above.
 
-**Leave `LLM_MAX_TOKENS` generous.** Models that reason before answering spend part of the budget doing it. At 140 roughly a third of replies were truncated mid-sentence; at the default 400, none were. This does not make messages longer — the validator still enforces each persona's word limit.
+**Leave `LLM_MAX_TOKENS` generous.** Models that reason before answering spend part of the budget doing it. Measured on a reasoning-capable model: at 140 roughly a third of replies came back truncated mid-sentence; at the default 400, none did. This does not make messages longer — the validator still enforces each persona's word limit.
 
 **`TYPING_CHARS_PER_SECOND` controls request volume.** The engine waits for a message to finish typing before requesting the next, so typing speed sets the request rate. The default gives a turn roughly every 28 seconds, which keeps a free-tier key comfortable.
 
@@ -137,13 +137,13 @@ One asyncio event loop runs three things: an RSS poller, the conversation engine
 
 ## Tests
 
-145 tests, no network and no API key required — the feed and the model are both faked.
+186 tests, no network and no API key required — the feed and the model are both faked.
 
 ```bash
 python -m pytest -q
 ```
 
-They cover topic advancement and revisiting, stale-reply rejection, speaker balance over long runs, restart continuity, API validation and limits, load shedding at the client cap, all three deduplication tiers, feed retention, malformed-output handling, secret redaction, the verbatim parody notice, the no-script speaker panel, poll backoff, and the scroll behaviour.
+They cover topic advancement and revisiting, stale-reply rejection, speaker balance over long runs, restart continuity, API validation and limits, load shedding at the client cap, all three deduplication tiers, feed and transcript retention, log rotation, the typewriter and its pacing, malformed-output handling, secret redaction, the verbatim parody notice, the no-script speaker panel, poll backoff, and the scroll behaviour.
 
 ## Disk usage
 
@@ -168,8 +168,13 @@ Pruning runs after every RSS poll, **including while the feed is unreachable** �
 ## Running it as a service
 
 ```bash
-nohup python live_news_wall.py > live_news_wall.log 2>&1 &
+nohup python live_news_wall.py > /dev/null 2>&1 &
 ```
+
+Redirect to `/dev/null`, not to `live_news_wall.log`: the application already
+writes that file itself and rotates it. Pointing the shell at the same name
+gives you two writers on one file, and the redirect keeps writing to the
+renamed inode the moment rotation happens.
 
 For a non-root `systemd` unit, `WorkingDirectory` should be the project directory and `ExecStart` the interpreter in `.venv`. `SIGINT` and `SIGTERM` are both handled: new work stops, tasks are cancelled, and SQLite and the HTTP sessions are closed before exit.
 

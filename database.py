@@ -25,13 +25,13 @@ import asyncio
 import json
 import sqlite3
 import time
-
-# Never trim speaker history below the window the selector actually reads.
-SPEAKER_HISTORY_FLOOR = 50
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 SCHEMA_VERSION = 2
+
+# Never trim speaker history below the window the selector actually reads.
+SPEAKER_HISTORY_FLOOR = 50
 
 
 @dataclass(frozen=True)
@@ -246,12 +246,8 @@ class Database:
     # ------------------------------------------------------------------
     # messages
     # ------------------------------------------------------------------
-    async def next_message_id(self) -> int:
-        """Return the next monotonic message id."""
-        async with self._lock:
-            return self._next_message_id_locked()
-
     def _next_message_id_locked(self) -> int:
+        """Return the next monotonic message id. Caller must hold the lock."""
         row = self._conn.execute(
             "SELECT COALESCE(MAX(id), 0) AS m FROM messages"
         ).fetchone()
@@ -323,11 +319,6 @@ class Database:
                 "SELECT speaker FROM speaker_history ORDER BY seq DESC LIMIT ?", (n,)
             ).fetchall()
         return [r["speaker"] for r in rows]
-
-    async def clear_speaker_history(self) -> None:
-        async with self._lock:
-            self._conn.execute("DELETE FROM speaker_history")
-            self._conn.commit()
 
     # ------------------------------------------------------------------
     # topics

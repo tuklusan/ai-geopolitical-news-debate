@@ -299,12 +299,6 @@ HTML_PAGE = r"""<!DOCTYPE html>
   }
   .attribution a { color: var(--accent); }
 
-  /* A viewer who asked for less motion gets the text at once. */
-  @media (prefers-reduced-motion: reduce) {
-    .msg .body.typing::after { animation: none; content: none; }
-    .transcript { scroll-behavior: auto; }
-  }
-
   /* Mobile layout */
   @media (max-width: 768px) {
     .main { flex-direction: column; }
@@ -318,8 +312,10 @@ HTML_PAGE = r"""<!DOCTYPE html>
     .jump-btn { bottom: 12px; right: 12px; padding: 7px 14px; }
   }
 
-  /* Respect a viewer who has asked for reduced motion. */
+  /* Respect a viewer who has asked for reduced motion: no caret blink,
+     no smooth scrolling, no button transition. */
   @media (prefers-reduced-motion: reduce) {
+    .msg .body.typing::after { animation: none; content: none; }
     .transcript { scroll-behavior: auto; }
     .jump-btn { transition: none; }
   }
@@ -377,7 +373,6 @@ var unseenCount = 0;          // messages added while not following
 var basePollMs = 2000;        // normal cadence
 var MAX_BACKOFF_MS = 30000;   // ceiling while the server is unreachable
 var currentDelayMs = basePollMs;
-var pollTimer = null;
 var retryEl = document.getElementById('retryIndicator');
 
 /* ---------- Typewriter ---------- */
@@ -394,6 +389,7 @@ var MAX_RENDERED = 500;
 
 /* The speaker panel is server-rendered and static; script only needs the
    persona data to label incoming messages. */
+
 /* ---------- Message rendering ---------- */
 function renderMessage(msg, animate) {
   var div = document.createElement('div');
@@ -614,7 +610,7 @@ async function poll() {
   } finally {
     // Self-scheduling: a fixed setInterval would stack overlapping
     // requests against a server that has stopped responding.
-    pollTimer = setTimeout(poll, currentDelayMs);
+    setTimeout(poll, currentDelayMs);
   }
 }
 

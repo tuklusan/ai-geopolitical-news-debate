@@ -37,10 +37,10 @@ DEFAULTS = {
     "LLM_BASE_URL": "https://integrate.api.nvidia.com/v1",
     "LLM_MODEL": "deepseek-ai/deepseek-v4-flash-0731",
     "LLM_TEMPERATURE": "0.55",
-    # 400, not 140: glm-5.2 spends part of its budget on reasoning tokens
-    # before the visible answer, and a tight cap truncates replies
-    # mid-sentence. The validator still enforces the per-persona word limits,
-    # so a larger budget does not make messages longer.
+    # 400, not 140: a model that reasons before answering spends part of
+    # its budget doing so, and a tight cap truncates the visible reply
+    # mid-sentence. The validator still enforces the per-persona word
+    # limits, so a larger budget does not make messages longer.
     "LLM_MAX_TOKENS": "400",
     "LLM_TIMEOUT_SECONDS": "90",
     "RSS_FEED_URL": "https://www.france24.com/en/business/rss",
