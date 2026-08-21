@@ -18,7 +18,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "live-news-wall"
-version = "1.0.0"
+# Single source of truth: live_news_wall/__init__.py
+dynamic = ["version"]
 description = "A continuously running AI-parody debate wall driven by live business-news headlines."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -66,6 +67,9 @@ Article = "https://supratim-sanyal.blogspot.com/2026/07/build-live-ai-news-debat
 
 [project.scripts]
 live-news-wall = "live_news_wall.app:main"
+
+[tool.setuptools.dynamic]
+version = { attr = "live_news_wall.__version__" }
 
 [tool.setuptools]
 # Explicit: the repository root also holds tests/ and docs/, which must not

@@ -1302,7 +1302,7 @@ class TestBoundedGrowth:
         root = logging.getLogger()
         before = list(root.handlers)
         try:
-            handler = live_news_wall.install_file_logging(load_config(str(env)))
+            handler = live_news_wall.apply_logging_config(load_config(str(env)))
             assert isinstance(handler, RotatingFileHandler)
             assert handler.maxBytes == 20000
             assert handler.backupCount == 2
@@ -1325,7 +1325,7 @@ class TestBoundedGrowth:
         monkeypatch.delenv("LOG_FILE", raising=False)
         env = tmp_path / ".env"
         env.write_text("LOG_FILE=" + "\n", encoding="utf-8")
-        assert live_news_wall.install_file_logging(load_config(str(env))) is None
+        assert live_news_wall.apply_logging_config(load_config(str(env))) is None
 
     def test_rotation_is_on_by_default(self):
         """Shipped defaults must bound the log without any user action."""
@@ -1353,7 +1353,7 @@ class TestBoundedGrowth:
         try:
             cfg = load_config(str(env))
             assert cfg.log_file == str(target)
-            handler = live_news_wall.install_file_logging(cfg)
+            handler = live_news_wall.apply_logging_config(cfg)
             assert isinstance(handler, RotatingFileHandler)
             logging.getLogger("live_news_wall.probe").warning("written")
             handler.flush()
@@ -1372,7 +1372,7 @@ class TestBoundedGrowth:
         env = tmp_path / ".env"
         env.write_text(f"LOG_FILE={bad}\n", encoding="utf-8")
         cfg = load_config(str(env))
-        assert live_news_wall.install_file_logging(cfg) is None  # no exception
+        assert live_news_wall.apply_logging_config(cfg) is None  # no exception
 
     @pytest.mark.asyncio
     async def test_pruning_still_runs_while_rss_is_down(self, db):
@@ -1561,3 +1561,100 @@ class TestStarterConfig:
         env = tmp_path / "ph.env"
         env.write_text("LLM_API_KEY=your-key-here\n", encoding="utf-8")
         assert load_config(str(env)).has_api_key is False
+
+
+class TestLoggingConfiguration:
+    """LOG_LEVEL and LOG_FILE must both work from config/.env."""
+
+    def test_log_level_from_dotenv_is_applied(self, tmp_path, monkeypatch):
+        """Reading it at import time silently pinned the level at INFO."""
+        import logging
+        from live_news_wall.app import apply_logging_config
+        from live_news_wall.config_loader import load_config
+
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv("LOG_LEVEL", raising=False)
+        env = tmp_path / "d.env"
+        env.write_text("LOG_LEVEL=DEBUG\nLOG_FILE=\n", encoding="utf-8")
+        root = logging.getLogger()
+        before = root.level
+        try:
+            cfg = load_config(str(env))
+            assert cfg.log_level == "DEBUG"
+            apply_logging_config(cfg)
+            assert root.isEnabledFor(logging.DEBUG)
+        finally:
+            root.setLevel(before)
+
+    def test_log_level_is_case_insensitive(self, tmp_path, monkeypatch):
+        from live_news_wall.config_loader import load_config
+
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv("LOG_LEVEL", raising=False)
+        env = tmp_path / "c.env"
+        env.write_text("LOG_LEVEL=debug\n", encoding="utf-8")
+        assert load_config(str(env)).log_level == "DEBUG"
+
+    def test_invalid_log_level_is_rejected_plainly(self, tmp_path, monkeypatch):
+        from live_news_wall.config_loader import ConfigError, load_config
+
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv("LOG_LEVEL", raising=False)
+        env = tmp_path / "b.env"
+        env.write_text("LOG_LEVEL=CHATTY\n", encoding="utf-8")
+        with pytest.raises(ConfigError) as exc:
+            load_config(str(env))
+        assert "LOG_LEVEL" in str(exc.value)
+
+    def test_log_level_appears_in_the_public_summary(self, tmp_path, monkeypatch):
+        from live_news_wall.config_loader import load_config
+
+        monkeypatch.chdir(tmp_path)
+        assert "log_level" in load_config(str(tmp_path / "none.env")).public_summary()
+
+
+class TestVersionSingleSource:
+    """The version must be defined once, not in two files that can drift."""
+
+    def test_pyproject_does_not_hardcode_a_version(self):
+        root = pathlib.Path(__file__).resolve().parents[1]
+        text = (root / "pyproject.toml").read_text(encoding="utf-8")
+        assert 'dynamic = ["version"]' in text
+        assert "\nversion = \"" not in text, "version must not be duplicated here"
+
+    def test_installed_metadata_matches_the_package_attribute(self):
+        from importlib import metadata
+        import live_news_wall
+
+        try:
+            installed = metadata.version("live-news-wall")
+        except metadata.PackageNotFoundError:
+            pytest.skip("package not installed in this environment")
+        assert installed == live_news_wall.__version__
+
+
+class TestDocumentedCommandsExist:
+    """Every command a document tells the reader to run must be real."""
+
+    def test_no_document_references_the_removed_entry_point(self):
+        import re
+
+        root = pathlib.Path(__file__).resolve().parents[1]
+        # BUILD_NOTES.md and manual.md are explicitly labelled historical
+        # records of the original generated build, so they are exempt.
+        current = [root / "README.md", root / ".github" / "RELEASE_NOTES.md",
+                   root / "CONTRIBUTING.md", root / "live_news_wall" / "env.example"]
+        current += list((root / "live_news_wall").glob("*.py"))
+        offenders = []
+        for doc in current:
+            if not doc.exists():
+                continue
+            for m in re.finditer(r"python +live_news_wall\.py", doc.read_text(encoding="utf-8")):
+                offenders.append(f"{doc.name}: {m.group(0)}")
+        assert not offenders, f"stale entry point referenced: {offenders}"
+
+    def test_historical_documents_are_labelled_as_such(self):
+        root = pathlib.Path(__file__).resolve().parents[1]
+        for name in ("BUILD_NOTES.md", "manual.md"):
+            head = (root / name).read_text(encoding="utf-8")[:200]
+            assert "Historical document" in head, f"{name} must say it is historical"

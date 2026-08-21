@@ -24,16 +24,18 @@ POTUS and the President of the European Commission are fictional
 representations of the offices only. No real officeholder is named.
 
 Foreground launch:
-    python live_news_wall.py
+    live-news-wall            (console script)
+    python -m live_news_wall  (equivalent)
 
 Background launch:
-    nohup python live_news_wall.py > /dev/null 2>&1 &
+    nohup live-news-wall > /dev/null 2>&1 &
 
 Send stdout to /dev/null rather than to live_news_wall.log: the application
 writes and rotates that file itself, and a shell redirect to the same name
 would fight the rotation for it.
 
-Configuration is read from config/.env (see config/.env.example).
+Configuration is read from config/.env, which "live-news-wall --init"
+creates from the template packaged alongside this module.
 """
 from __future__ import annotations
 
@@ -42,15 +44,14 @@ import asyncio
 import logging
 import os
 import pathlib
-from logging.handlers import RotatingFileHandler
 import signal
 import socket
 import sys
+from logging.handlers import RotatingFileHandler
 from typing import List, Optional
 
 from . import __version__
-from .config_loader import read_config_template
-from .config_loader import Config, ConfigError, load_config
+from .config_loader import Config, ConfigError, load_config, read_config_template
 from .database import Database
 from .engine import ConversationEngine
 from .feed import FeedClient
@@ -69,14 +70,17 @@ def _configure_logging() -> None:
     )
 
 
-def install_file_logging(cfg) -> Optional[RotatingFileHandler]:
-    """Add a size-capped rotating file handler from the loaded config.
+def apply_logging_config(cfg) -> Optional[RotatingFileHandler]:
+    """Apply the loaded logging settings: level first, then the file handler.
 
-    Called after load_config so a LOG_FILE set in config/.env is honoured;
-    reading it at import time would miss the dotenv file entirely. A path
-    that cannot be written is reported and downgraded to stderr-only
-    rather than preventing startup.
+    Called after load_config so LOG_LEVEL and LOG_FILE set in config/.env are
+    honoured. Reading them at import time missed the dotenv file entirely,
+    which silently pinned the level at INFO however the file was written.
+    A log path that cannot be written is reported and downgraded to
+    stderr-only rather than preventing startup.
     """
+    level = (getattr(cfg, "log_level", "") or "INFO").strip().upper()
+    logging.getLogger().setLevel(level)
     path = (getattr(cfg, "log_file", "") or "").strip()
     if not path:
         return None
@@ -90,6 +94,7 @@ def install_file_logging(cfg) -> Optional[RotatingFileHandler]:
     except OSError as exc:
         logger.warning("Cannot write log file %s (%s); logging to stderr only.", path, exc)
         return None
+    handler.setLevel(level)
     handler.setFormatter(logging.Formatter(LOG_FORMAT))
     logging.getLogger().addHandler(handler)
     logger.info(
@@ -123,7 +128,7 @@ class Application:
 
     def __init__(self, config: Optional[Config] = None):
         self._cfg = config or load_config()
-        install_file_logging(self._cfg)
+        apply_logging_config(self._cfg)
         self._db = Database(self._cfg.db_path)
         self._feed = FeedClient(self._cfg.rss_feed_url)
         self._llm: Optional[LLMClient] = None
@@ -291,7 +296,7 @@ def main(argv: Optional[List[str]] = None) -> None:
         logger.error("Configuration error: %s", exc)
         sys.exit(2)
     if args.check:
-        install_file_logging(cfg)
+        apply_logging_config(cfg)
         logger.info("Configuration OK.")
         for key, value in cfg.public_summary().items():
             logger.info("config %s = %s", key, value)

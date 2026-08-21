@@ -103,6 +103,7 @@ Settings come from the process environment first, then `config/.env`, then these
 | `DB_PATH` | `live_news_wall.db` | SQLite file. |
 | `LOG_FILE` | `live_news_wall.log` | Rotating log file, **on by default**. Set it to an empty value for stderr only (right under `systemd`). |
 | `LOG_MAX_BYTES` / `LOG_BACKUP_COUNT` | `5242880` / `3` | Rotation limits, so a `nohup` log cannot grow without bound. |
+| `LOG_LEVEL` | `INFO` | `CRITICAL`, `ERROR`, `WARNING`, `INFO`, `DEBUG` or `NOTSET`. `DEBUG` also reports each pacing delay and typing wait. |
 
 ## Choosing a model
 
@@ -195,7 +196,7 @@ Pruning runs after every RSS poll, **including while the feed is unreachable** â
 ## Running it as a service
 
 ```bash
-nohup python live_news_wall.py > /dev/null 2>&1 &
+nohup live-news-wall > /dev/null 2>&1 &
 ```
 
 Redirect to `/dev/null`, not to `live_news_wall.log`: the application already

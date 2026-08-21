@@ -61,6 +61,7 @@ DEFAULTS = {
     "LOG_FILE": "live_news_wall.log",
     "LOG_MAX_BYTES": "5242880",
     "LOG_BACKUP_COUNT": "3",
+    "LOG_LEVEL": "INFO",
     # Typing speed for the on-screen typewriter effect. The engine waits the
     # same length of time before asking for the next turn, so this also sets
     # how often the model is called.
@@ -85,6 +86,12 @@ PLACEHOLDER_KEYS = {
     "xxx",
 }
 
+
+# Accepted LOG_LEVEL values. Validated at load time so a typo is reported
+# plainly instead of silently leaving the level at INFO.
+VALID_LOG_LEVELS = frozenset(
+    {"CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG", "NOTSET"}
+)
 
 CONFIG_TEMPLATE_NAME = "env.example"
 
@@ -131,6 +138,7 @@ class Config:
     log_file: str
     log_max_bytes: int
     log_backup_count: int
+    log_level: str
     typing_chars_per_second: float
 
     @property
@@ -159,6 +167,7 @@ class Config:
             "transcript_retention_messages": self.transcript_retention_messages,
             "log_file": self.log_file or "(stderr only)",
             "log_rotation": f"{self.log_max_bytes} bytes x {self.log_backup_count}",
+            "log_level": self.log_level,
             "typing_chars_per_second": self.typing_chars_per_second,
         }
 
@@ -228,6 +237,7 @@ def load_config(env_file: str = "config/.env") -> Config:
     transcript_keep = _as_number(_get("TRANSCRIPT_RETENTION_MESSAGES"), "TRANSCRIPT_RETENTION_MESSAGES", int)
     log_max_bytes = _as_number(_get("LOG_MAX_BYTES"), "LOG_MAX_BYTES", int)
     log_backups = _as_number(_get("LOG_BACKUP_COUNT"), "LOG_BACKUP_COUNT", int)
+    log_level = _get("LOG_LEVEL").strip().upper()
     typing_cps = _as_number(_get("TYPING_CHARS_PER_SECOND"), "TYPING_CHARS_PER_SECOND", float)
 
     if not 1 <= port <= 65535:
@@ -257,6 +267,10 @@ def load_config(env_file: str = "config/.env") -> Config:
         )
     if log_max_bytes < 1024:
         raise ConfigError(f"LOG_MAX_BYTES must be at least 1024, got {log_max_bytes}")
+    if log_level not in VALID_LOG_LEVELS:
+        raise ConfigError(
+            f"LOG_LEVEL must be one of {sorted(VALID_LOG_LEVELS)}, got {log_level!r}"
+        )
     if log_backups < 0:
         raise ConfigError(f"LOG_BACKUP_COUNT cannot be negative, got {log_backups}")
     if typing_cps <= 0:
@@ -296,5 +310,6 @@ def load_config(env_file: str = "config/.env") -> Config:
         log_file=os.environ.get("LOG_FILE", DEFAULTS["LOG_FILE"]).strip(),
         log_max_bytes=log_max_bytes,
         log_backup_count=log_backups,
+        log_level=log_level,
         typing_chars_per_second=typing_cps,
     )
