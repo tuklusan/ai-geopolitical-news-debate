@@ -166,7 +166,7 @@ One asyncio event loop runs three things: an RSS poller, the conversation engine
 
 ## Tests
 
-221 tests, no network and no API key required — the feed and the model are both faked.
+224 tests, no network and no API key required — the feed and the model are both faked.
 
 ```bash
 python -m pytest -q

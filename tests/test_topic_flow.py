@@ -1878,3 +1878,36 @@ class TestReleaseNotesAreReusable:
             assert phrase not in text, (
                 f"release notes template says {phrase!r}, which is false for later tags"
             )
+
+
+class TestAddingAPersonaIsEnough:
+    """The README promises that adding a persona is all it takes."""
+
+    def test_persona_keys_are_not_a_second_hardcoded_list(self):
+        from live_news_wall.personas import PERSONAS, persona_keys
+
+        assert persona_keys() == list(PERSONAS)
+
+    def test_a_new_persona_becomes_selectable_and_visible(self, db, monkeypatch):
+        from live_news_wall import personas as pm
+        from live_news_wall.personas import Persona
+
+        extra = Persona(key="tester", avatar="*", display_name="Test Speaker",
+                        role="A fictional test persona", country="Nowhere",
+                        style="Terse.", max_words=20, max_lines=None,
+                        system_prompt="You are a test persona.")
+        patched = dict(pm.PERSONAS)
+        patched["tester"] = extra
+        monkeypatch.setattr(pm, "PERSONAS", patched)
+
+        assert "tester" in pm.persona_keys(), "new persona must be selectable"
+        assert any(p["key"] == "tester" for p in pm.persona_public_info()), \
+            "new persona must appear in the speaker panel"
+
+    def test_documented_promise_matches_behaviour(self):
+        """Guard the README sentence itself, so code and claim move together."""
+        root = pathlib.Path(__file__).resolve().parents[1]
+        readme = (root / "README.md").read_text(encoding="utf-8")
+        assert "adapts automatically" in readme
+        from live_news_wall.personas import PERSONAS, persona_keys
+        assert set(persona_keys()) == set(PERSONAS)

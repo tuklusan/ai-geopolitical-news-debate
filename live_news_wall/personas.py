@@ -112,8 +112,14 @@ PERSONAS: Dict[str, Persona] = {
 
 
 def persona_keys() -> list:
-    """Return the ordered persona keys."""
-    return ["potus", "eu", "gronk", "yoda"]
+    """Return the persona keys, in definition order.
+
+    Derived from PERSONAS rather than repeated as a literal. A second,
+    hardcoded list meant a persona added to PERSONAS was silently invisible
+    to speaker selection and to the sidebar, which contradicted the
+    documented promise that adding one is all it takes.
+    """
+    return list(PERSONAS)
 
 
 def persona_public_info() -> list:
