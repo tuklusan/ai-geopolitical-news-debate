@@ -105,6 +105,12 @@ The first version of this application was written end to end by [ChatDev](https:
 
 `BUILD_NOTES.md` and `manual.md` are the original generated documents, kept as a record of that run.
 
+## Contributions
+
+This repository is published as a **read-only companion to the blog post**, not as a collaborative project. Issues, the wiki, and project boards are disabled, and pull requests from outside collaborators are not accepted.
+
+Please do not open bug reports or send patches — they will not be reviewed. You are welcome to fork the code and take it in your own direction, within the terms of the licence below. If you want to reach the author about it, the blog post's comment section is the place.
+
 ## Licence
 
 Released under the **SANYALnet Labs Non-Commercial License** — see [LICENSE](LICENSE).
