@@ -1,0 +1,17 @@
+# Secrets — never commit
+config/.env
+*.env
+!config/.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+
+# Runtime artifacts
+*.db
+*.db-wal
+*.db-shm
+*.log
