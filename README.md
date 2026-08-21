@@ -1,5 +1,10 @@
 # Live News Debate Wall
 
+[![CI](https://github.com/tuklusan/ai-geopolitical-news-debate/actions/workflows/ci.yml/badge.svg)](https://github.com/tuklusan/ai-geopolitical-news-debate/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/tuklusan/ai-geopolitical-news-debate?sort=semver)](https://github.com/tuklusan/ai-geopolitical-news-debate/releases/latest)
+[![Python](https://img.shields.io/badge/python-3.12%20%7C%203.13-blue)](https://www.python.org/)
+[![Licence](https://img.shields.io/badge/licence-SANYALnet%20Non--Commercial-lightgrey)](LICENSE)
+
 **A wall-mounted argument that never ends.** Point a spare monitor at it and four AI parodies — an American president, a European Commission president, a Vogon bureaucrat who only speaks in haiku, and a certain small green Jedi — will bicker about real business headlines, forever, one short message at a time.
 
 It pulls live stories from the France 24 Business RSS feed, gives each headline eight to twelve turns of debate, then moves on to the next one. It remembers what has already been said so nobody repeats themselves. It survives the feed going down, the model going down, and being killed mid-sentence. It is one Python file's worth of dependencies and no web server at all.
@@ -33,11 +38,13 @@ A speaker is chosen at random each turn, never twice in a row, with anyone who h
 
 Requires **Python 3.12+**. No Node, npm, Nginx, Apache, Flask, or FastAPI.
 
-Install the released wheel — it is pure Python, so the same file works on Linux, macOS, and Windows, x86-64 and arm64:
+Install the released wheel — it is pure Python, so **the same file works on every platform**: Linux, macOS, and Windows, x86-64 and arm64 alike. Nothing to compile, no per-platform installer to choose between.
 
 ```bash
-pip install live_news_wall-1.0.0-py3-none-any.whl
+pip install https://github.com/tuklusan/ai-geopolitical-news-debate/releases/download/v1.0.0/live_news_wall-1.0.0-py3-none-any.whl
 ```
+
+Checksums are published with the release as `SHA256SUMS.txt`.
 
 Or from a clone:
 
