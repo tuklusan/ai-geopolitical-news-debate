@@ -245,6 +245,7 @@ defaults.
 | `RSS_FEED_URL` | `https://www.france24.com/en/business/rss` | RSS feed URL |
 | `HOST` | `0.0.0.0` | HTTP server bind address |
 | `PORT` | `8765` | HTTP server port |
+| `TYPING_CHARS_PER_SECOND` | `25` | Typewriter speed on screen; also paces how often the model is called |
 | `DB_PATH` | `live_news_wall.db` | SQLite database file path |
 | `RSS_REFRESH_INTERVAL_SECONDS` | `300` | Seconds between periodic RSS refreshes |
 | `MESSAGE_MIN_DELAY_SECONDS` | `3` | Minimum seconds between visible messages |

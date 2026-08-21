@@ -54,6 +54,11 @@ NO_REVISIT_RECENT = 3
 # Pause before retrying when a turn produced nothing.
 IDLE_SLEEP_SECONDS = 2.0
 
+# Typing speed used to pace the loop, matching the browser's typewriter.
+DEFAULT_TYPING_CPS = 25.0
+# A pathological reply must not stall the wall for minutes.
+MAX_TYPING_WAIT_SECONDS = 30.0
+
 # Stored feed items retained when the config does not say.
 DEFAULT_FEED_RETENTION = 500
 
@@ -97,6 +102,7 @@ class ConversationEngine:
         self._topic_version = 0
         self._topic_lifespan = self._random_lifespan()
         self._recent_lines: List[str] = []
+        self._last_message_chars = 0
         self._rss_healthy = False
         self._model_healthy = False
         self._model_disabled = False
@@ -413,8 +419,21 @@ class ConversationEngine:
         if len(self._recent_lines) > CONTEXT_TURNS:
             self._recent_lines = self._recent_lines[-CONTEXT_TURNS:]
         self._model_healthy = True
+        self._last_message_chars = len(text)
         logger.info("Turn stored: %s on topic %s", persona.key, topic.id)
         return True
+
+    def _typing_seconds(self, characters: int) -> float:
+        """How long the browser will spend typing a message of this length.
+
+        The conversation loop waits this out before requesting the next
+        turn, so a speaker finishes typing before the next one starts and
+        the model is called less often.
+        """
+        cps = _cfg_num(self._cfg, "typing_chars_per_second", DEFAULT_TYPING_CPS)
+        if cps <= 0:
+            cps = DEFAULT_TYPING_CPS
+        return min(max(0.0, characters) / cps, MAX_TYPING_WAIT_SECONDS)
 
     async def _conversation_loop(self) -> None:
         """Main loop. Pacing is enforced per attempt by the LLM limiter."""
@@ -425,9 +444,17 @@ class ConversationEngine:
                     continue
                 produced = await self._produce_message()
                 if produced:
-                    # Yield so a cancelled loop stops promptly even when the
-                    # limiter delay is configured to zero.
-                    await asyncio.sleep(0)
+                    # Let the message finish typing on screen before asking
+                    # for the next one. Also the main brake on how often the
+                    # model is called.
+                    typing = self._typing_seconds(self._last_message_chars)
+                    if typing > 0:
+                        logger.debug("Waiting %.1fs for the message to type out.", typing)
+                        await asyncio.sleep(typing)
+                    else:
+                        # Yield so a cancelled loop stops promptly even when
+                        # the limiter delay is configured to zero.
+                        await asyncio.sleep(0)
                 else:
                     # No topic yet, or the turn was dropped. Without this the
                     # loop spins at full CPU whenever there is nothing to say

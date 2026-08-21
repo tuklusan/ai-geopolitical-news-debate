@@ -27,7 +27,7 @@ import os
 import sys
 from dataclasses import dataclass
 from typing import List
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 import pytest_asyncio
@@ -54,6 +54,7 @@ class FakeConfig:
     topic_turns_min: int = 8
     topic_turns_max: int = 12
     feed_retention_items: int = 500
+    typing_chars_per_second: float = 25.0
 
 
 class CountingLLM:
@@ -1041,3 +1042,138 @@ class TestMandatedDisclaimer:
         db, client = api
         text = await (await client.get("/")).text()
         assert text.count(MANDATED_NOTICE) == 2
+
+
+class TestTypewriter:
+    """Messages are typed out on screen, and the engine waits for it."""
+
+    def test_typing_speed_is_injected_from_config(self):
+        from web_server import build_html_page
+
+        assert "var TYPING_CPS = 12.5;" in build_html_page(12.5)
+        assert "__TYPING_CPS__" not in build_html_page(12.5)
+
+    def test_invalid_speeds_fall_back_to_the_default(self):
+        from web_server import build_html_page, DEFAULT_TYPING_CPS
+
+        for bad in (0, -5, None, "fast"):
+            assert f"var TYPING_CPS = {DEFAULT_TYPING_CPS!r};" in build_html_page(bad)
+
+    def test_server_passes_its_setting_to_the_page(self):
+        db = Database(":memory:")
+        db.initialize()
+        eng = ConversationEngine(db, MagicMock(), None, FakeConfig(has_api_key=False))
+        srv = WebServer(db, eng, typing_cps=7.0)
+        assert srv._typing_cps == 7.0
+        db.close()
+
+    def test_typing_never_uses_innerHTML(self):
+        """The growing message must never be parsed as markup."""
+        from web_server import build_html_page
+
+        html = build_html_page()
+        fn = html[html.index("function pumpTypeQueue"):]
+        fn = fn[:fn.index("\n}")]
+        assert "innerHTML" not in fn
+        assert "job.el.textContent = job.text.slice(0, job.i);" in fn
+
+    def test_backlog_on_load_is_not_typed_out(self):
+        """Only messages arriving after the first paint animate."""
+        from web_server import build_html_page
+
+        html = build_html_page()
+        assert "renderMessage(msg, firstPaintDone && !reduceMotion)" in html
+        assert "firstPaintDone = true;" in html
+
+    def test_reduced_motion_disables_the_effect(self):
+        from web_server import build_html_page
+
+        html = build_html_page()
+        assert "prefers-reduced-motion: reduce" in html
+        assert "reduceMotion" in html
+        css = html[html.index("<style>"):html.index("</style>")]
+        block = css[css.index("@media (prefers-reduced-motion: reduce)"):]
+        assert "content: none" in block[:220]
+
+    def test_messages_are_queued_not_typed_in_parallel(self):
+        from web_server import build_html_page
+
+        html = build_html_page()
+        assert "if (typingActive) return;" in html
+        assert "typeQueue.push(" in html
+
+    # ---- engine pacing ----
+
+    def test_typing_wait_scales_with_message_length(self, db):
+        eng = make_engine(db, CountingLLM(), ListFeed([]), typing_chars_per_second=10.0)
+        assert eng._typing_seconds(0) == 0.0
+        assert eng._typing_seconds(50) == 5.0
+        assert eng._typing_seconds(100) == 10.0
+
+    def test_typing_wait_is_capped(self, db):
+        from engine import MAX_TYPING_WAIT_SECONDS
+
+        eng = make_engine(db, CountingLLM(), ListFeed([]), typing_chars_per_second=1.0)
+        assert eng._typing_seconds(100000) == MAX_TYPING_WAIT_SECONDS
+
+    def test_bad_typing_speed_falls_back(self, db):
+        from engine import DEFAULT_TYPING_CPS
+
+        eng = make_engine(db, CountingLLM(), ListFeed([]), typing_chars_per_second=0)
+        assert eng._typing_seconds(DEFAULT_TYPING_CPS) == 1.0
+
+    @pytest.mark.asyncio
+    async def test_stored_message_length_is_recorded(self, db):
+        feed = ListFeed([FeedItem("H.", "http://a", "s")])
+        eng = make_engine(db, CountingLLM(), feed)
+        await eng.refresh_feed()
+        assert await eng._produce_message() is True
+        msgs = await db.get_messages()
+        assert eng._last_message_chars == len(msgs[-1].text)
+
+    @pytest.mark.asyncio
+    async def test_loop_waits_for_typing_before_the_next_turn(self, db):
+        """The pacing brake: fewer model calls per minute."""
+        slept = []
+
+        async def fake_sleep(seconds):
+            slept.append(seconds)
+            raise asyncio.CancelledError  # stop after the first wait
+
+        feed = ListFeed([FeedItem("H.", "http://a", "s")])
+        eng = make_engine(db, CountingLLM(), feed, typing_chars_per_second=10.0)
+        await eng.refresh_feed()
+        eng._running = True
+        with patch("engine.asyncio.sleep", fake_sleep):
+            with pytest.raises(asyncio.CancelledError):
+                await eng._conversation_loop()
+        assert slept, "the loop must wait after producing a message"
+        assert slept[0] == pytest.approx(eng._last_message_chars / 10.0)
+
+    def test_config_rejects_a_non_positive_speed(self, monkeypatch):
+        from config_loader import ConfigError, load_config
+
+        monkeypatch.setenv("TYPING_CHARS_PER_SECOND", "0")
+        with pytest.raises(ConfigError):
+            load_config("does-not-exist.env")
+
+    def test_typing_is_time_derived_not_tick_counted(self):
+        """A throttled tab must catch up, not type for minutes."""
+        from web_server import build_html_page
+
+        html = build_html_page()
+        fn = html[html.index("function pumpTypeQueue"):]
+        fn = fn[:fn.index("\n}")]
+        assert "Date.now() - started" in fn
+        assert "perTick" not in fn, "character count must not come from tick count"
+
+    def test_typing_duration_matches_engine_pacing(self, db):
+        """Client typing time and server wait are the same figure."""
+        from web_server import DEFAULT_TYPING_CPS as WEB_CPS
+        from engine import DEFAULT_TYPING_CPS as ENGINE_CPS
+
+        assert WEB_CPS == ENGINE_CPS
+        eng = make_engine(db, CountingLLM(), ListFeed([]), typing_chars_per_second=WEB_CPS)
+        # 250 characters at the shared default should take the same time
+        # the browser will spend typing them.
+        assert eng._typing_seconds(250) == pytest.approx(250 / WEB_CPS)

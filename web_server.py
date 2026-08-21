@@ -45,6 +45,11 @@ LISTEN_BACKLOG = 128
 # Sent with a 503 so a shedding client waits instead of retrying instantly.
 RETRY_AFTER_SECONDS = 5
 
+# Characters per second for the typewriter effect. The engine paces itself
+# to the same figure so a new turn tends to arrive as the previous one
+# finishes typing, rather than piling up behind it.
+DEFAULT_TYPING_CPS = 25.0
+
 
 def render_persona_cards(persona_info) -> str:
     """Render the speaker panel as static HTML.
@@ -71,14 +76,21 @@ def render_persona_cards(persona_info) -> str:
     return "\n      ".join(cards)
 
 
-def build_html_page() -> str:
+def build_html_page(typing_cps: float = DEFAULT_TYPING_CPS) -> str:
     """Return the full embedded HTML/CSS/JS page string."""
     persona_info = persona_mod.persona_public_info()
     persona_json = json.dumps(persona_info, ensure_ascii=False)
+    try:
+        cps = float(typing_cps)
+    except (TypeError, ValueError):
+        cps = DEFAULT_TYPING_CPS
+    if cps <= 0:
+        cps = DEFAULT_TYPING_CPS
     return (
         HTML_PAGE
         .replace("__PERSONA_CARDS__", render_persona_cards(persona_info))
         .replace("__PERSONA_JSON__", persona_json)
+        .replace("__TYPING_CPS__", repr(cps))
     )
 
 
@@ -221,6 +233,14 @@ HTML_PAGE = r"""<!DOCTYPE html>
     margin-bottom: 4px;
   }
   .msg .body { font-size: 15px; line-height: 1.5; }
+  /* Caret shown only while a message is being typed out. */
+  .msg .body.typing::after {
+    content: "8C";
+    margin-left: 1px;
+    color: var(--muted);
+    animation: caret-blink 1s steps(1) infinite;
+  }
+  @keyframes caret-blink { 50% { opacity: 0; } }
   .msg.potus { border-left-color: var(--potus); }
   .msg.potus .who { color: var(--potus); }
   .msg.eu { border-left-color: var(--eu); }
@@ -278,6 +298,12 @@ HTML_PAGE = r"""<!DOCTYPE html>
     line-height: 1.4;
   }
   .attribution a { color: var(--accent); }
+
+  /* A viewer who asked for less motion gets the text at once. */
+  @media (prefers-reduced-motion: reduce) {
+    .msg .body.typing::after { animation: none; content: none; }
+    .transcript { scroll-behavior: auto; }
+  }
 
   /* Mobile layout */
   @media (max-width: 768px) {
@@ -353,6 +379,15 @@ var MAX_BACKOFF_MS = 30000;   // ceiling while the server is unreachable
 var currentDelayMs = basePollMs;
 var pollTimer = null;
 var retryEl = document.getElementById('retryIndicator');
+
+/* ---------- Typewriter ---------- */
+var TYPING_CPS = __TYPING_CPS__;   // characters per second, from the server
+var TYPE_TICK_MS = 40;             // one timer per message, not per character
+var typeQueue = [];
+var typingActive = false;
+var firstPaintDone = false;        // the backlog on load appears at once
+var reduceMotion = !!(window.matchMedia &&
+  window.matchMedia('(prefers-reduced-motion: reduce)').matches);
 /* The wall is designed to stay open for days. Without a cap the transcript
    grows without bound and the tab's memory grows with it. */
 var MAX_RENDERED = 500;
@@ -360,7 +395,7 @@ var MAX_RENDERED = 500;
 /* The speaker panel is server-rendered and static; script only needs the
    persona data to label incoming messages. */
 /* ---------- Message rendering ---------- */
-function renderMessage(msg) {
+function renderMessage(msg, animate) {
   var div = document.createElement('div');
   div.className = 'msg ' + msg.speaker;
   div.setAttribute('data-id', msg.id);
@@ -388,6 +423,7 @@ function renderMessage(msg) {
   var body = document.createElement('div');
   body.className = 'body';
   body.textContent = msg.text;  // textContent prevents HTML/JSON injection
+  if (animate) queueTyping(body, msg.text);
 
   div.appendChild(who);
   div.appendChild(body);
@@ -407,6 +443,44 @@ function trimTranscript() {
     if (oldId !== null) delete renderedIds[oldId];
     transcript.removeChild(oldest);
   }
+}
+
+/* Type one message out, then start the next. Messages are queued rather
+   than typed in parallel so two speakers never appear to talk at once. */
+function queueTyping(bodyEl, text) {
+  bodyEl.textContent = '';
+  bodyEl.className = 'body typing';
+  typeQueue.push({ el: bodyEl, text: text, i: 0 });
+  pumpTypeQueue();
+}
+
+function finishTyping(job, timer) {
+  if (timer) clearInterval(timer);
+  job.el.textContent = job.text;
+  job.el.className = 'body';
+  typingActive = false;
+  pumpTypeQueue();
+}
+
+function pumpTypeQueue() {
+  if (typingActive) return;
+  var job = typeQueue.shift();
+  if (!job) return;
+  typingActive = true;
+  var started = Date.now();
+  var timer = setInterval(function () {
+    // How many characters should be visible is derived from elapsed time,
+    // not from how many times this timer has fired. A throttled tab (a
+    // backgrounded phone, battery saver) then catches up in larger steps
+    // instead of typing for minutes and drifting out of step with the
+    // server, which paces new turns to the same characters-per-second.
+    var due = Math.ceil((Date.now() - started) / 1000 * TYPING_CPS);
+    job.i = Math.min(job.text.length, Math.max(job.i, due));
+    // textContent throughout: the growing message is never parsed as HTML.
+    job.el.textContent = job.text.slice(0, job.i);
+    if (isFollowing) scrollToBottom();
+    if (job.i >= job.text.length) finishTyping(job, timer);
+  }, TYPE_TICK_MS);
 }
 
 /* ---------- Scroll management ---------- */
@@ -444,7 +518,7 @@ function applyMessages(messages) {
   messages.forEach(function(msg) {
     if (renderedIds[msg.id]) return;
     renderedIds[msg.id] = true;
-    renderMessage(msg);
+    renderMessage(msg, firstPaintDone && !reduceMotion);
     lastSeenId = Math.max(lastSeenId, msg.id);
     newCount++;
   });
@@ -528,6 +602,9 @@ async function poll() {
     if (data.messages) applyMessages(data.messages);
     if (data.topic) updateTopic(data.topic);
     if (data.health) updateHealth(data.health);
+    // Everything present on the first successful poll is history: show it
+    // immediately. Only later arrivals are typed out.
+    firstPaintDone = true;
     // Recovered: resume the normal cadence.
     currentDelayMs = basePollMs;
     showRetrying(false);
@@ -561,10 +638,12 @@ class WebServer:
         engine: ConversationEngine,
         max_clients: int = DEFAULT_MAX_CLIENTS,
         backlog: int = LISTEN_BACKLOG,
+        typing_cps: float = DEFAULT_TYPING_CPS,
     ):
         self._db = db
         self._engine = engine
         self._max_clients = max(1, int(max_clients))
+        self._typing_cps = typing_cps
         self._backlog = max(1, int(backlog))
         # Requests currently being served. Counted rather than queued: an
         # unbounded wait queue would defer the overload instead of shedding
@@ -607,7 +686,9 @@ class WebServer:
         self._app.router.add_get("/healthz", self._healthz)
 
     async def _index(self, request: web.Request) -> web.Response:
-        return web.Response(text=build_html_page(), content_type="text/html")
+        return web.Response(
+            text=build_html_page(self._typing_cps), content_type="text/html"
+        )
 
     async def _messages(self, request: web.Request) -> web.Response:
         raw_since = request.query.get("since", "0")

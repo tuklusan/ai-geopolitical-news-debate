@@ -71,6 +71,7 @@ Settings come from the process environment first, then `config/.env`, then these
 | `HOST` / `PORT` | `0.0.0.0` / `8765` | Bind address. |
 | `MAX_CLIENTS` | `1024` | Concurrent request ceiling. Excess gets a small 503 with `Retry-After`, never an unbounded queue. |
 | `FEED_RETENTION_ITEMS` | `500` | How many past stories to keep. Older ones are pruned after each refresh; the active story is never pruned. |
+| `TYPING_CHARS_PER_SECOND` | `25` | Speed of the on-screen typewriter. Also the main brake on how often the model is called — see below. |
 | `DB_PATH` | `live_news_wall.db` | SQLite file. |
 
 ## Choosing a model
@@ -86,6 +87,8 @@ Any OpenAI-compatible endpoint works — set `LLM_BASE_URL`, `LLM_MODEL`, and `L
 **Avoid models that return `content: null`.** Some reasoning models put the whole answer in a separate `reasoning` field and leave `content` empty. Every turn then looks like a failure and the wall stays silent. `nvidia/llama-3.3-nemotron-super-49b-v1.5` behaves this way.
 
 **Avoid very slow models.** Turns are generated one at a time, so a model that takes a minute to first token produces a wall that barely moves. Keep `LLM_TIMEOUT_SECONDS` near 90 so a stalled request is abandoned instead of blocking the conversation.
+
+**`TYPING_CHARS_PER_SECOND` controls your bill.** The engine waits for a message to finish typing before requesting the next one, so the typing speed sets the request rate. At the default 25, a 250-character reply takes ten seconds to type and the next call is made ten seconds later — roughly a quarter of the requests you would make without it. Lower it to spend less; raise it for a livelier wall.
 
 Small models are a poor fit for this particular job: they hold the personas badly and repeat themselves. If you want cheap, `z-ai/glm-4.7-flash` is far better value than a 4B model.
 
@@ -107,6 +110,7 @@ One asyncio event loop runs three things: an RSS poller, the conversation engine
 - **Persistence.** SQLite in WAL mode holds the transcript, topics, queue, per-topic memory, and speaker history. Restart resumes the same conversation with contiguous message ids.
 - **Deduplication.** A story is identified by GUID, then by normalized link (scheme, `www.`, trailing slash, and campaign parameters removed), then by a SHA-256 of its title and publication date — so the same item re-served three different ways starts one discussion, not three.
 - **Endpoints.** `GET /` (the wall), `GET /api/messages?since=&limit=` (JSON, validated, `no-store`), `GET /healthz`. Past `MAX_CLIENTS` in flight, requests are shed with a 503 and `Retry-After` rather than queued.
+- **Typing.** Each new message is typed out a character at a time with a blinking caret, one speaker at a time, so the wall reads like someone at a keyboard rather than text appearing in blocks. The character count is derived from elapsed time rather than timer ticks, so a backgrounded or throttled tab catches up in larger steps instead of crawling. Messages already on screen when you load the page appear at once — only new arrivals are typed — and `prefers-reduced-motion` turns the effect off entirely.
 - **Front end.** Polling backs off exponentially to 30s when the server is unreachable, honours `Retry-After`, shows a quiet "Reconnecting…" hint, and resumes normal cadence on recovery. The transcript is capped so a wall left running for days does not grow without bound.
 
 ## Tests

@@ -88,7 +88,12 @@ class Application:
                 timeout_seconds=self._cfg.llm_timeout_seconds,
             )
         self._engine = ConversationEngine(self._db, self._feed, self._llm, self._cfg)
-        self._web = WebServer(self._db, self._engine, max_clients=self._cfg.max_clients)
+        self._web = WebServer(
+            self._db,
+            self._engine,
+            max_clients=self._cfg.max_clients,
+            typing_cps=self._cfg.typing_chars_per_second,
+        )
 
     async def run(self) -> None:
         """Initialize, start engine + server, and run until shutdown."""
