@@ -6,9 +6,7 @@ It pulls live stories from the France 24 Business RSS feed, gives each headline 
 
 📖 **The full story of how this was built — by a virtual software company of AI agents, in 13 steps — is on the blog: [Build and Run a Live AI News Debate Wall with ChatDev on Linux](https://supratim-sanyal.blogspot.com/2026/07/build-live-ai-news-debate-wall-chatdev-linux.html)** (Part 2 of the ChatDev series).
 
-![The Live News Debate Wall in a browser: a scrolling transcript of AI-parody messages beside a panel describing each speaker, with RSS and model health indicators.](docs/screenshot.png)
-
-<sub>Screenshot from the original build shown in the blog post. The current version carries the full parody notice, top and bottom, and an emoji avatar beside every speaker.</sub>
+![The Live News Debate Wall running in a browser. The mandatory AI-parody notice spans the full width at the top and again at the bottom. Between them, a scrolling transcript shows avatar-labelled messages from Yoda, Gronk Vellumthud and the President of the European Commission debating a current headline, beside a static Debate Panel describing all four speakers with RSS and model health indicators below it.](docs/screenshot.png)
 
 ---
 
