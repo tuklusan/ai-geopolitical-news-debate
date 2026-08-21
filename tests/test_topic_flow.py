@@ -1785,3 +1785,47 @@ class TestDependencyAndDefaultConsistency:
             if line.startswith("!"):
                 target = root / line[1:]
                 assert target.exists(), f"un-ignore rule for a missing path: {line}"
+
+
+class TestReleaseWorkflowIsExecutable:
+    """The release workflow only runs on a tag, so its mistakes surface at
+    the worst possible moment. Check what can be checked here instead."""
+
+    def _release_yaml(self):
+        root = pathlib.Path(__file__).resolve().parents[1]
+        return (root / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+
+    def test_version_gate_does_not_read_a_key_that_does_not_exist(self):
+        """pyproject declares the version dynamically; reading
+        ['project']['version'] raises KeyError and fails every release."""
+        text = self._release_yaml()
+        assert "['project']['version']" not in text, (
+            "release.yml reads a static pyproject version key, but the version "
+            "is dynamic; this fails on every tag"
+        )
+        assert "live_news_wall.__version__" in text
+
+    def test_the_version_command_actually_works(self):
+        """Run the exact expression the workflow runs."""
+        import subprocess, sys
+
+        root = pathlib.Path(__file__).resolve().parents[1]
+        out = subprocess.run(
+            [sys.executable, "-c", "import live_news_wall; print(live_news_wall.__version__)"],
+            cwd=root, capture_output=True, text=True,
+        )
+        assert out.returncode == 0, out.stderr
+        import live_news_wall
+        assert out.stdout.strip() == live_news_wall.__version__
+
+    def test_release_notes_file_referenced_by_the_workflow_exists(self):
+        import re
+
+        root = pathlib.Path(__file__).resolve().parents[1]
+        for rel in re.findall(r"--notes-file (\S+)", self._release_yaml()):
+            assert (root / rel).exists(), f"release.yml points at a missing {rel}"
+
+    def test_release_requires_the_full_ci_matrix_first(self):
+        text = self._release_yaml()
+        assert "uses: ./.github/workflows/ci.yml" in text
+        assert "needs: verify" in text

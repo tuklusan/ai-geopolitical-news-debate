@@ -72,7 +72,7 @@ Put your key in the `LLM_API_KEY` line of the `config/.env` it writes, then star
 live-news-wall
 ```
 
-`live-news-wall --check` validates configuration without starting the server, `--about` prints the licence and parody notice, and `--host`/`--port`/`--config` override the file.
+`live-news-wall --check` validates configuration without starting the server, `--about` prints the licence and parody notice, `--version` reports the release, and `--host`/`--port`/`--config` override the file.
 
 Equivalent forms: `python -m live_news_wall` from anywhere, or `python -m live_news_wall.app` from a clone.
 
@@ -165,7 +165,7 @@ One asyncio event loop runs three things: an RSS poller, the conversation engine
 
 ## Tests
 
-214 tests, no network and no API key required — the feed and the model are both faked.
+218 tests, no network and no API key required — the feed and the model are both faked.
 
 ```bash
 python -m pytest -q
