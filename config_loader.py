@@ -55,6 +55,11 @@ DEFAULTS = {
     "MAX_CLIENTS": "1024",
     "FEED_RETENTION_ITEMS": "500",
     "TRANSCRIPT_RETENTION_MESSAGES": "5000",
+    # Rotation is on by default: an unrotated log is the fastest way to
+    # fill a disk on a wall that runs for months.
+    "LOG_FILE": "live_news_wall.log",
+    "LOG_MAX_BYTES": "5242880",
+    "LOG_BACKUP_COUNT": "3",
     # Typing speed for the on-screen typewriter effect. The engine waits the
     # same length of time before asking for the next turn, so this also sets
     # how often the model is called.
@@ -94,6 +99,9 @@ class Config:
     max_clients: int
     feed_retention_items: int
     transcript_retention_messages: int
+    log_file: str
+    log_max_bytes: int
+    log_backup_count: int
     typing_chars_per_second: float
 
     @property
@@ -120,6 +128,8 @@ class Config:
             "max_clients": self.max_clients,
             "feed_retention_items": self.feed_retention_items,
             "transcript_retention_messages": self.transcript_retention_messages,
+            "log_file": self.log_file or "(stderr only)",
+            "log_rotation": f"{self.log_max_bytes} bytes x {self.log_backup_count}",
             "typing_chars_per_second": self.typing_chars_per_second,
         }
 
@@ -187,6 +197,8 @@ def load_config(env_file: str = "config/.env") -> Config:
     max_clients = _as_number(_get("MAX_CLIENTS"), "MAX_CLIENTS", int)
     retention = _as_number(_get("FEED_RETENTION_ITEMS"), "FEED_RETENTION_ITEMS", int)
     transcript_keep = _as_number(_get("TRANSCRIPT_RETENTION_MESSAGES"), "TRANSCRIPT_RETENTION_MESSAGES", int)
+    log_max_bytes = _as_number(_get("LOG_MAX_BYTES"), "LOG_MAX_BYTES", int)
+    log_backups = _as_number(_get("LOG_BACKUP_COUNT"), "LOG_BACKUP_COUNT", int)
     typing_cps = _as_number(_get("TYPING_CHARS_PER_SECOND"), "TYPING_CHARS_PER_SECOND", float)
 
     if not 1 <= port <= 65535:
@@ -214,6 +226,10 @@ def load_config(env_file: str = "config/.env") -> Config:
         raise ConfigError(
             f"TRANSCRIPT_RETENTION_MESSAGES must be at least 100, got {transcript_keep}"
         )
+    if log_max_bytes < 1024:
+        raise ConfigError(f"LOG_MAX_BYTES must be at least 1024, got {log_max_bytes}")
+    if log_backups < 0:
+        raise ConfigError(f"LOG_BACKUP_COUNT cannot be negative, got {log_backups}")
     if typing_cps <= 0:
         raise ConfigError(
             f"TYPING_CHARS_PER_SECOND must be greater than 0, got {typing_cps}"
@@ -244,5 +260,12 @@ def load_config(env_file: str = "config/.env") -> Config:
         max_clients=max_clients,
         feed_retention_items=retention,
         transcript_retention_messages=transcript_keep,
+        # Read directly rather than through _get: for a file path an empty
+        # value is meaningful ("do not write a log file"), whereas _get
+        # treats blank as unset and substitutes the default, which would
+        # make rotation impossible to switch off.
+        log_file=os.environ.get("LOG_FILE", DEFAULTS["LOG_FILE"]).strip(),
+        log_max_bytes=log_max_bytes,
+        log_backup_count=log_backups,
         typing_chars_per_second=typing_cps,
     )

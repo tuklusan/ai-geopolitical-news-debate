@@ -74,7 +74,7 @@ Settings come from the process environment first, then `config/.env`, then these
 | `TYPING_CHARS_PER_SECOND` | `25` | Speed of the on-screen typewriter. Also the main brake on how often the model is called — see below. |
 | `TRANSCRIPT_RETENTION_MESSAGES` | `5000` | Transcript messages kept. Older ones are pruned, with their speaker history and orphaned topics. Minimum 100. |
 | `DB_PATH` | `live_news_wall.db` | SQLite file. |
-| `LOG_FILE` | *(none)* | Optional rotating log file. Empty means stderr only. |
+| `LOG_FILE` | `live_news_wall.log` | Rotating log file, **on by default**. Set it to an empty value for stderr only (right under `systemd`). |
 | `LOG_MAX_BYTES` / `LOG_BACKUP_COUNT` | `5242880` / `3` | Rotation limits, so a `nohup` log cannot grow without bound. |
 
 ## Choosing a model
@@ -159,7 +159,11 @@ Measured at roughly **2,600 messages a day**, then simulated forward with prunin
 
 After each RSS refresh the transcript is trimmed to `TRANSCRIPT_RETENTION_MESSAGES`, along with the speaker history and any topic no retained message refers to. The active topic is never removed. Stored feed items are capped separately by `FEED_RETENTION_ITEMS`.
 
-Logging is quiet by design: per-request access logging is off, because a browser polling every couple of seconds otherwise accounts for about 95% of the log and several gigabytes a year. Under `systemd`, stderr goes to the journal, which rotates on its own; for `nohup`, set `LOG_FILE` and the log rotates at `LOG_MAX_BYTES` with `LOG_BACKUP_COUNT` kept.
+Logging is quiet by design: per-request access logging is off, because a browser polling every couple of seconds otherwise accounts for about 95% of the log and several gigabytes a year.
+
+**Log rotation is on by default** — `LOG_FILE=live_news_wall.log`, rotating at 5 MB with 3 kept, so the log is capped near 20 MB with no configuration at all. Set `LOG_FILE` to an empty value for stderr only, which is what you want under `systemd`, where the journal rotates on its own. A path that cannot be written is reported and downgraded to stderr rather than stopping startup.
+
+Pruning runs after every RSS poll, **including while the feed is unreachable** — turns keep being generated from stored topics during an outage, so skipping it then would let the transcript grow for as long as the outage lasted.
 
 ## Running it as a service
 

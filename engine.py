@@ -214,6 +214,11 @@ class ConversationEngine:
         if not items:
             self._rss_healthy = False
             logger.warning("RSS unavailable; continuing in degraded state.")
+            # Still prune. Turns keep being generated from stored topics
+            # while the feed is down, so skipping this would let the
+            # transcript grow unbounded for exactly as long as the outage
+            # lasts.
+            await self._prune_feed_items()
             return
         self._rss_healthy = True
 

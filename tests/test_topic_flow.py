@@ -1283,23 +1283,28 @@ class TestBoundedGrowth:
         import logging
         from logging.handlers import RotatingFileHandler
         import live_news_wall
+        from config_loader import load_config
 
+        monkeypatch.delenv("LOG_FILE", raising=False)
         path = tmp_path / "wall.log"
-        monkeypatch.setenv("LOG_FILE", str(path))
-        monkeypatch.setenv("LOG_MAX_BYTES", "20000")
-        monkeypatch.setenv("LOG_BACKUP_COUNT", "2")
+        env = tmp_path / ".env"
+        env.write_text(
+            "\n".join([
+                f"LOG_FILE={path}",
+                "LOG_MAX_BYTES=20000",
+                "LOG_BACKUP_COUNT=2",
+                "",
+            ]),
+            encoding="utf-8",
+        )
         root = logging.getLogger()
         before = list(root.handlers)
         try:
-            live_news_wall._configure_logging()
-            added = [h for h in root.handlers
-                     if isinstance(h, RotatingFileHandler) and h not in before]
-            assert added, "LOG_FILE must install a rotating handler"
-            handler = added[0]
+            handler = live_news_wall.install_file_logging(load_config(str(env)))
+            assert isinstance(handler, RotatingFileHandler)
             assert handler.maxBytes == 20000
             assert handler.backupCount == 2
             log = logging.getLogger("live_news_wall.rotation_probe")
-            log.propagate = True
             for i in range(3000):
                 log.info("a reasonably typical log line number %d with detail", i)
             handler.close()
@@ -1311,20 +1316,80 @@ class TestBoundedGrowth:
                 if h not in before:
                     root.removeHandler(h)
 
-    def test_no_log_file_means_stderr_only(self, monkeypatch):
+    def test_no_log_file_means_stderr_only(self, monkeypatch, tmp_path):
+        import live_news_wall
+        from config_loader import load_config
+
+        monkeypatch.delenv("LOG_FILE", raising=False)
+        env = tmp_path / ".env"
+        env.write_text("LOG_FILE=" + "\n", encoding="utf-8")
+        assert live_news_wall.install_file_logging(load_config(str(env))) is None
+
+    def test_rotation_is_on_by_default(self):
+        """Shipped defaults must bound the log without any user action."""
+        from config_loader import DEFAULTS
+
+        assert DEFAULTS["LOG_FILE"].strip(), "rotation must ship enabled"
+        assert int(DEFAULTS["LOG_MAX_BYTES"]) >= 1024
+        assert int(DEFAULTS["LOG_BACKUP_COUNT"]) >= 1
+
+    def test_log_file_from_env_file_is_honoured(self, tmp_path, monkeypatch):
+        """Regression: LOG_FILE was read at import, before .env was loaded,
+        so setting it in config/.env silently did nothing."""
         import logging
         from logging.handlers import RotatingFileHandler
         import live_news_wall
+        from config_loader import load_config
 
         monkeypatch.delenv("LOG_FILE", raising=False)
+        target = tmp_path / "from_env_file.log"
+        env = tmp_path / ".env"
+        env.write_text(f"LOG_FILE={target}\n", encoding="utf-8")
+
         root = logging.getLogger()
         before = list(root.handlers)
         try:
-            live_news_wall._configure_logging()
-            added = [h for h in root.handlers
-                     if isinstance(h, RotatingFileHandler) and h not in before]
-            assert not added
+            cfg = load_config(str(env))
+            assert cfg.log_file == str(target)
+            handler = live_news_wall.install_file_logging(cfg)
+            assert isinstance(handler, RotatingFileHandler)
+            logging.getLogger("live_news_wall.probe").warning("written")
+            handler.flush()
+            assert target.exists(), "the configured file must actually be written"
         finally:
             for h in list(root.handlers):
                 if h not in before:
                     root.removeHandler(h)
+
+    def test_unwritable_log_path_degrades_instead_of_crashing(self, tmp_path, monkeypatch):
+        import live_news_wall
+        from config_loader import load_config
+
+        monkeypatch.delenv("LOG_FILE", raising=False)
+        bad = tmp_path / "no-such-dir" / "deep" / "wall.log"
+        env = tmp_path / ".env"
+        env.write_text(f"LOG_FILE={bad}\n", encoding="utf-8")
+        cfg = load_config(str(env))
+        assert live_news_wall.install_file_logging(cfg) is None  # no exception
+
+    @pytest.mark.asyncio
+    async def test_pruning_still_runs_while_rss_is_down(self, db):
+        """Turns keep being generated during an outage; growth must stay capped."""
+        for i in range(400):
+            await db.add_message("potus", f"Old {i}.", topic_id=1)
+        dead = ListFeed([])          # feed returns nothing at all
+        eng = make_engine(db, CountingLLM(), dead, transcript_retention_messages=120)
+        await eng.refresh_feed()
+        assert eng.rss_healthy is False
+        assert len(await db.get_messages(limit=1000)) <= 120
+
+    def test_log_config_is_validated(self, monkeypatch):
+        from config_loader import ConfigError, load_config
+
+        monkeypatch.setenv("LOG_MAX_BYTES", "10")
+        with pytest.raises(ConfigError):
+            load_config("does-not-exist.env")
+        monkeypatch.delenv("LOG_MAX_BYTES")
+        monkeypatch.setenv("LOG_BACKUP_COUNT", "-1")
+        with pytest.raises(ConfigError):
+            load_config("does-not-exist.env")

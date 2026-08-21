@@ -49,34 +49,49 @@ from feed import FeedClient
 from llm_client import LLMClient
 from web_server import WebServer
 
-def _configure_logging() -> None:
-    """Log to stderr, and optionally to a size-capped rotating file.
+LOG_FORMAT = "%(asctime)s %(levelname)s [%(name)s] %(message)s"
+logger = logging.getLogger("live_news_wall")
 
-    Under systemd, stderr goes to the journal, which rotates already.
-    Under nohup the operator redirects to a file that nothing truncates,
-    so LOG_FILE gives that case a bounded alternative.
-    """
-    level = os.environ.get("LOG_LEVEL", "INFO").upper()
-    fmt = "%(asctime)s %(levelname)s [%(name)s] %(message)s"
-    logging.basicConfig(level=level, format=fmt)
-    path = os.environ.get("LOG_FILE", "").strip()
-    if not path:
-        return
-    try:
-        max_bytes = int(os.environ.get("LOG_MAX_BYTES", 5 * 1024 * 1024))
-        backups = int(os.environ.get("LOG_BACKUP_COUNT", 3))
-    except ValueError:
-        max_bytes, backups = 5 * 1024 * 1024, 3
-    handler = RotatingFileHandler(
-        path, maxBytes=max(1024, max_bytes), backupCount=max(0, backups),
-        encoding="utf-8",
+
+def _configure_logging() -> None:
+    """Set up stderr logging immediately, before any config is read."""
+    logging.basicConfig(
+        level=os.environ.get("LOG_LEVEL", "INFO").upper(),
+        format=LOG_FORMAT,
     )
-    handler.setFormatter(logging.Formatter(fmt))
+
+
+def install_file_logging(cfg) -> Optional[RotatingFileHandler]:
+    """Add a size-capped rotating file handler from the loaded config.
+
+    Called after load_config so a LOG_FILE set in config/.env is honoured;
+    reading it at import time would miss the dotenv file entirely. A path
+    that cannot be written is reported and downgraded to stderr-only
+    rather than preventing startup.
+    """
+    path = (getattr(cfg, "log_file", "") or "").strip()
+    if not path:
+        return None
+    try:
+        handler = RotatingFileHandler(
+            path,
+            maxBytes=max(1024, int(cfg.log_max_bytes)),
+            backupCount=max(0, int(cfg.log_backup_count)),
+            encoding="utf-8",
+        )
+    except OSError as exc:
+        logger.warning("Cannot write log file %s (%s); logging to stderr only.", path, exc)
+        return None
+    handler.setFormatter(logging.Formatter(LOG_FORMAT))
     logging.getLogger().addHandler(handler)
+    logger.info(
+        "Logging to %s (rotating at %d bytes, keeping %d)",
+        path, cfg.log_max_bytes, cfg.log_backup_count,
+    )
+    return handler
 
 
 _configure_logging()
-logger = logging.getLogger("live_news_wall")
 
 
 def detected_lan_urls(port: int) -> List[str]:
@@ -100,6 +115,7 @@ class Application:
 
     def __init__(self, config: Optional[Config] = None):
         self._cfg = config or load_config()
+        install_file_logging(self._cfg)
         self._db = Database(self._cfg.db_path)
         self._feed = FeedClient(self._cfg.rss_feed_url)
         self._llm: Optional[LLMClient] = None
