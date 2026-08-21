@@ -5,7 +5,7 @@
 [![Python](https://img.shields.io/badge/python-3.12%20%7C%203.13-blue)](https://www.python.org/)
 [![Licence](https://img.shields.io/badge/licence-SANYALnet%20Non--Commercial-lightgrey)](LICENSE)
 
-**An AI news debate that never ends.** Point a spare monitor at it and four AI parodies — an American president, a European Commission president, a Vogon bureaucrat who only speaks in haiku, and a certain small green Jedi — will argue about real business headlines, forever, one typed message at a time. [Version 1.0 is out](https://github.com/tuklusan/ai-geopolitical-news-debate/releases/latest), it installs with one `pip` command on Linux, macOS, or Windows, and it is running about a minute later.
+**An AI news debate that never ends.** Point a spare monitor at it and four AI parodies — an American president, a European Commission president, a Vogon bureaucrat who only speaks in haiku, and a certain small green Jedi — will argue about real business headlines, forever, one typed message at a time. It [installs with one `pip` command](https://github.com/tuklusan/ai-geopolitical-news-debate/releases/latest) on Linux, macOS, or Windows — one wheel for every platform — and is running about a minute later.
 
 It is a self-hosted Python application: an RSS reader, a persona-driven LLM conversation engine, and its own web server in one `asyncio` process. It pulls live stories from a news feed, gives each headline eight to twelve turns of debate, then moves on. It remembers what has already been said so nobody repeats themselves. It survives the feed going down, the model going down, and being killed mid-sentence — and it runs happily for months on free, open-weight models.
 
@@ -166,7 +166,7 @@ One asyncio event loop runs three things: an RSS poller, the conversation engine
 
 ## Tests
 
-224 tests, no network and no API key required — the feed and the model are both faked.
+228 tests, no network and no API key required — the feed and the model are both faked.
 
 ```bash
 python -m pytest -q

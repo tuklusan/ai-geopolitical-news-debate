@@ -4,6 +4,8 @@ Install it with one `pip` command on Linux, macOS, or Windows and it is running 
 
 It is the corrected, hardened descendant of the application ChatDev's agents generated from a single prompt — see [the article](https://supratim-sanyal.blogspot.com/2026/07/build-live-ai-news-debate-wall-chatdev-linux.html) for how that build went, and the commit history for everything changed since.
 
+What changed in this release is listed in the [changelog](https://github.com/tuklusan/ai-geopolitical-news-debate/blob/main/CHANGELOG.md).
+
 ## Install
 
 The application is pure Python, so **one wheel works on every platform** — Linux, macOS, and Windows, x86-64 and arm64 alike. There is nothing to compile and no per-platform installer to choose between.

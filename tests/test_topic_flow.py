@@ -1911,3 +1911,57 @@ class TestAddingAPersonaIsEnough:
         assert "adapts automatically" in readme
         from live_news_wall.personas import PERSONAS, persona_keys
         assert set(persona_keys()) == set(PERSONAS)
+
+
+class TestChangelog:
+    """A release must be described somewhere, and the description must
+    match the version actually being shipped."""
+
+    def test_changelog_has_an_entry_for_the_current_version(self):
+        import live_news_wall
+
+        root = pathlib.Path(__file__).resolve().parents[1]
+        text = (root / "CHANGELOG.md").read_text(encoding="utf-8")
+        assert f"## {live_news_wall.__version__}" in text, (
+            f"CHANGELOG.md has no section for {live_news_wall.__version__}"
+        )
+
+    def test_release_notes_point_at_the_changelog(self):
+        root = pathlib.Path(__file__).resolve().parents[1]
+        notes = (root / ".github" / "RELEASE_NOTES.md").read_text(encoding="utf-8")
+        assert "CHANGELOG.md" in notes
+
+
+class TestNoVersionNumbersInProse:
+    """A release version written into a sentence is wrong at the next
+    release. The changelog is the one place versions belong."""
+
+    # A v-prefixed semver, or the words version/release followed by one.
+    # Deliberately narrow: 0.55 is a temperature, "RSS 2.0" is a format and
+    # "4.5 MB" is a disk figure, none of which are release versions.
+    PATTERNS = (r"v\d+\.\d+\.\d+", r"(?i)(?:version|release)\s+v?\d+\.\d+")
+
+    def test_current_docs_state_no_release_version(self):
+        import re
+
+        root = pathlib.Path(__file__).resolve().parents[1]
+        offenders = []
+        for name in ("README.md", ".github/RELEASE_NOTES.md", "CONTRIBUTING.md"):
+            doc = root / name
+            if not doc.exists():
+                continue
+            for line in doc.read_text(encoding="utf-8").splitlines():
+                for pat in self.PATTERNS:
+                    m = re.search(pat, line)
+                    if m:
+                        offenders.append(f"{name}: {m.group(0)!r} in {line.strip()[:70]}")
+        assert not offenders, f"release version stated in prose will go stale: {offenders}"
+
+    def test_the_check_would_catch_a_real_regression(self):
+        """Guard the guard: the patterns must match what they claim to."""
+        import re
+
+        for sample in ("Version 1.0 is out", "see v1.2.3 for details", "release 2.0"):
+            assert any(re.search(p, sample) for p in self.PATTERNS), sample
+        for benign in ("temperature 0.55", "RSS 2.0 feeds", "4.5 MB per day", "Python 3.12"):
+            assert not any(re.search(p, benign) for p in self.PATTERNS), benign
