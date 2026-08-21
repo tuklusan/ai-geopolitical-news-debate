@@ -35,7 +35,9 @@ except Exception:  # pragma: no cover - dotenv is a soft dependency fallback
 
 DEFAULTS = {
     "LLM_BASE_URL": "https://integrate.api.nvidia.com/v1",
-    "LLM_MODEL": "z-ai/glm-5.2",
+    # NOTE: z-ai/glm-5.2, used when this project was built, was retired by
+    # the provider on 2026-08-21. See "Choosing a model" in README.md.
+    "LLM_MODEL": "nvidia/nemotron-mini-4b-instruct",
     "LLM_TEMPERATURE": "0.55",
     "LLM_MAX_TOKENS": "140",
     "LLM_TIMEOUT_SECONDS": "90",

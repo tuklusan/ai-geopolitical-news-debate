@@ -237,7 +237,7 @@ defaults.
 | Variable | Default | Description |
 |---|---|---|
 | `LLM_BASE_URL` | `https://integrate.api.nvidia.com/v1` | OpenAI-compatible API base URL |
-| `LLM_MODEL` | `z-ai/glm-5.2` | Model name sent in chat-completion requests |
+| `LLM_MODEL` | `nvidia/nemotron-mini-4b-instruct` | Model name sent in chat-completion requests. The original `z-ai/glm-5.2` was retired 2026-08-21; see "Choosing a model" in README.md |
 | `LLM_TEMPERATURE` | `0.55` | Sampling temperature |
 | `LLM_MAX_TOKENS` | `140` | Output token ceiling (high enough for a complete short response) |
 | `LLM_TIMEOUT_SECONDS` | `90` | Request timeout in seconds |
@@ -278,7 +278,7 @@ When the key is absent (or set to the placeholder
 
 ```
 LLM_BASE_URL=https://integrate.api.nvidia.com/v1
-LLM_MODEL=z-ai/glm-5.2
+LLM_MODEL=nvidia/nemotron-mini-4b-instruct
 LLM_TEMPERATURE=0.55
 LLM_MAX_TOKENS=140
 LLM_TIMEOUT_SECONDS=90
