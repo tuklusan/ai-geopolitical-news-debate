@@ -24,6 +24,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # macos-13 (Intel) is omitted: GitHub has retired that image and
+        # jobs targeting it are never assigned a runner. The wheel is
+        # py3-none-any, so Intel macOS runs the identical artifact that the
+        # Apple-silicon runners verify.
         os:
           - ubuntu-latest
           - ubuntu-22.04
@@ -33,7 +37,6 @@ jobs:
           - windows-11-arm
           - macos-latest
           - macos-15
-          - macos-13
         python: ["3.12", "3.13"]
     steps:
       - uses: actions/checkout@v4
@@ -92,7 +95,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, ubuntu-24.04-arm, windows-latest, windows-11-arm, macos-latest, macos-13]
+        os: [ubuntu-latest, ubuntu-24.04-arm, windows-latest, windows-11-arm, macos-latest]
     steps:
       - uses: actions/setup-python@v5
         with:
