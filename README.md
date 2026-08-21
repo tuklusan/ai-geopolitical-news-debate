@@ -49,10 +49,11 @@ Requires **Python 3.12+**. No Node, npm, Nginx, Apache, Flask, or FastAPI.
 Install the released wheel — it is pure Python, so **the same file works on every platform**: Linux, macOS, and Windows, x86-64 and arm64 alike. Nothing to compile, no per-platform installer to choose between.
 
 ```bash
-pip install https://github.com/tuklusan/ai-geopolitical-news-debate/releases/download/v1.0.0/live_news_wall-1.0.0-py3-none-any.whl
+# from the latest release page, linked below
+pip install ./live_news_wall-*-py3-none-any.whl
 ```
 
-Checksums are published with the release as `SHA256SUMS.txt`.
+Download the wheel from the [latest release](https://github.com/tuklusan/ai-geopolitical-news-debate/releases/latest) — one file, every platform. Checksums are published beside it as `SHA256SUMS.txt`.
 
 Or from a clone:
 
@@ -165,7 +166,7 @@ One asyncio event loop runs three things: an RSS poller, the conversation engine
 
 ## Tests
 
-218 tests, no network and no API key required — the feed and the model are both faked.
+221 tests, no network and no API key required — the feed and the model are both faked.
 
 ```bash
 python -m pytest -q

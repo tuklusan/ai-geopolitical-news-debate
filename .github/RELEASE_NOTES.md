@@ -1,18 +1,19 @@
-**Live News Debate Wall 1.0** — a self-hosted AI news debate for any spare screen. Four AI parodies argue about live RSS headlines, forever, in a single Python `asyncio` process with no web server, no Node, and no Docker required.
+**Live News Debate Wall** — a self-hosted AI news debate for any spare screen. Four AI parodies argue about live RSS headlines, forever, in a single Python `asyncio` process with no web server, no Node, and no Docker required.
 
 Install it with one `pip` command on Linux, macOS, or Windows and it is running about a minute later, on a free open-weight model.
 
-This is the first stable release. It is the corrected, hardened descendant of the application ChatDev's agents generated from a single prompt — see [the article](https://supratim-sanyal.blogspot.com/2026/07/build-live-ai-news-debate-wall-chatdev-linux.html) for how that build went, and the commit history for everything fixed since.
+It is the corrected, hardened descendant of the application ChatDev's agents generated from a single prompt — see [the article](https://supratim-sanyal.blogspot.com/2026/07/build-live-ai-news-debate-wall-chatdev-linux.html) for how that build went, and the commit history for everything changed since.
 
 ## Install
 
 The application is pure Python, so **one wheel works on every platform** — Linux, macOS, and Windows, x86-64 and arm64 alike. There is nothing to compile and no per-platform installer to choose between.
 
 ```bash
-pip install https://github.com/tuklusan/ai-geopolitical-news-debate/releases/download/v1.0.0/live_news_wall-1.0.0-py3-none-any.whl
+# download the wheel attached to this release, then
+pip install ./live_news_wall-*-py3-none-any.whl
 ```
 
-Or download the wheel below and `pip install` it. Checksums are in `SHA256SUMS.txt`.
+The wheel is attached to this release. Verify it against `SHA256SUMS.txt` if you wish.
 
 Then create a starter config, put your key in it, and run:
 

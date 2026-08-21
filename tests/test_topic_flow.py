@@ -1829,3 +1829,52 @@ class TestReleaseWorkflowIsExecutable:
         text = self._release_yaml()
         assert "uses: ./.github/workflows/ci.yml" in text
         assert "needs: verify" in text
+
+
+class TestNoHardcodedReleaseVersions:
+    """A version written into prose or a download URL is wrong the moment
+    the next release ships. The workflow supplies the tag; documents must
+    not repeat it."""
+
+    CURRENT_DOCS = ("README.md", ".github/RELEASE_NOTES.md", "CONTRIBUTING.md")
+
+    def test_no_version_pinned_download_urls(self):
+        import re
+
+        root = pathlib.Path(__file__).resolve().parents[1]
+        offenders = []
+        for name in self.CURRENT_DOCS:
+            doc = root / name
+            if not doc.exists():
+                continue
+            for m in re.finditer(r"releases/download/v\d+\.\d+\.\d+", doc.read_text(encoding="utf-8")):
+                offenders.append(f"{name}: {m.group(0)}")
+        assert not offenders, f"version-pinned download URL will rot: {offenders}"
+
+    def test_no_versioned_wheel_filename_in_prose(self):
+        import re
+
+        root = pathlib.Path(__file__).resolve().parents[1]
+        offenders = []
+        for name in self.CURRENT_DOCS:
+            doc = root / name
+            if not doc.exists():
+                continue
+            for m in re.finditer(r"live_news_wall-\d+\.\d+\.\d+-py3-none-any\.whl",
+                                 doc.read_text(encoding="utf-8")):
+                offenders.append(f"{name}: {m.group(0)}")
+        assert not offenders, f"pinned wheel filename will rot: {offenders}"
+
+
+class TestReleaseNotesAreReusable:
+    """The workflow feeds this same file to every tag, so nothing in it may
+    describe one particular release."""
+
+    def test_no_claim_that_only_fits_one_release(self):
+        root = pathlib.Path(__file__).resolve().parents[1]
+        text = (root / ".github" / "RELEASE_NOTES.md").read_text(encoding="utf-8").lower()
+        for phrase in ("first stable release", "first release", "initial release",
+                       "this is version", "1.0 release"):
+            assert phrase not in text, (
+                f"release notes template says {phrase!r}, which is false for later tags"
+            )
