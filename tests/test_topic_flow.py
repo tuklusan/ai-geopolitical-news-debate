@@ -1630,7 +1630,11 @@ class TestVersionSingleSource:
             installed = metadata.version("live-news-wall")
         except metadata.PackageNotFoundError:
             pytest.skip("package not installed in this environment")
-        assert installed == live_news_wall.__version__
+        assert installed == live_news_wall.__version__, (
+            f"installed metadata says {installed} but the package says "
+            f"{live_news_wall.__version__}; reinstall with 'pip install -e .' "
+            "after changing the version"
+        )
 
 
 class TestDocumentedCommandsExist:
@@ -1743,3 +1747,41 @@ class TestSharedLimitsAgree:
 
         assert engine.CONTEXT_TURNS == llm_client.MAX_CONTEXT_LINES
         assert engine.MAX_TOPIC_POINTS == llm_client.MAX_PRIOR_POINTS
+
+
+class TestDependencyAndDefaultConsistency:
+    """Values stated in two places must agree."""
+
+    def test_requirements_txt_matches_pyproject(self):
+        """requirements.txt is a convenience copy; nothing else keeps it true."""
+        import tomllib
+
+        root = pathlib.Path(__file__).resolve().parents[1]
+        declared = tomllib.load(open(root / "pyproject.toml", "rb"))["project"]["dependencies"]
+        listed = [
+            line.strip()
+            for line in (root / "requirements.txt").read_text(encoding="utf-8").splitlines()
+            if line.strip() and not line.strip().startswith("#")
+        ]
+        assert sorted(listed) == sorted(declared), (
+            "requirements.txt and pyproject.toml dependencies have drifted"
+        )
+
+    def test_engine_fallbacks_match_the_documented_defaults(self):
+        """The engine's own fallbacks are used when a config lacks an
+        attribute; they must not quietly differ from the shipped defaults."""
+        from live_news_wall import engine
+        from live_news_wall.config_loader import DEFAULTS
+
+        assert engine.DEFAULT_FEED_RETENTION == int(DEFAULTS["FEED_RETENTION_ITEMS"])
+        assert engine.DEFAULT_TRANSCRIPT_RETENTION == int(DEFAULTS["TRANSCRIPT_RETENTION_MESSAGES"])
+        assert engine.DEFAULT_TYPING_CPS == float(DEFAULTS["TYPING_CHARS_PER_SECOND"])
+
+    def test_gitignore_has_no_rule_for_a_path_that_no_longer_exists(self):
+        root = pathlib.Path(__file__).resolve().parents[1]
+        text = (root / ".gitignore").read_text(encoding="utf-8")
+        for line in text.splitlines():
+            line = line.strip()
+            if line.startswith("!"):
+                target = root / line[1:]
+                assert target.exists(), f"un-ignore rule for a missing path: {line}"
