@@ -71,3 +71,7 @@ live-news-wall = "live_news_wall.app:main"
 # Explicit: the repository root also holds tests/ and docs/, which must not
 # be swept into the distribution by automatic discovery.
 packages = ["live_news_wall"]
+
+[tool.setuptools.package-data]
+# The starter config must reach wheel users, who have no checkout to copy from.
+live_news_wall = ["env.example"]

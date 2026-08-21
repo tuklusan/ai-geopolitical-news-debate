@@ -14,12 +14,14 @@ pip install https://github.com/tuklusan/ai-geopolitical-news-debate/releases/dow
 
 Or download the wheel below and `pip install` it. Checksums are in `SHA256SUMS.txt`.
 
-Then set a key and run it:
+Then create a starter config, put your key in it, and run:
 
 ```bash
-mkdir -p config && printf 'LLM_API_KEY=your-key-here\n' > config/.env
+live-news-wall --init
 live-news-wall
 ```
+
+`--init` writes `config/.env` and behaves identically in bash, zsh, PowerShell, and cmd — there is no shell-specific file-creation step to get wrong, and no example file you need a checkout to copy.
 
 Open <http://localhost:8765/>. Use `live-news-wall --check` to validate configuration without starting the server, and `--about` for the licence and parody notice.
 

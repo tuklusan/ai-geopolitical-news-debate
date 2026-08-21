@@ -1491,3 +1491,73 @@ class TestCommandLine:
         args = build_parser().parse_args(["--port", "9123", "--config", str(env)])
         monkeypatch.setenv("PORT", str(args.port))
         assert load_config(str(env)).port == 9123
+
+
+class TestStarterConfig:
+    """The documented setup path must work on every platform."""
+
+    def test_template_ships_inside_the_package(self):
+        from live_news_wall.config_loader import read_config_template
+
+        text = read_config_template()
+        assert "LLM_API_KEY" in text
+        assert "LLM_BASE_URL" in text
+
+    def test_init_writes_a_usable_config(self, tmp_path, monkeypatch):
+        from live_news_wall.app import main
+        from live_news_wall.config_loader import load_config
+
+        monkeypatch.chdir(tmp_path)
+        for var in ("LLM_API_KEY", "PORT", "LOG_FILE"):
+            monkeypatch.delenv(var, raising=False)
+        with pytest.raises(SystemExit) as exc:
+            main(["--init"])
+        assert exc.value.code == 0
+        written = tmp_path / "config" / ".env"
+        assert written.exists(), "--init must create config/.env"
+        # The file it wrote must actually load.
+        cfg = load_config(str(written))
+        assert cfg.llm_model
+        assert not cfg.has_api_key, "a fresh config must not look configured"
+
+    def test_init_refuses_to_overwrite(self, tmp_path, monkeypatch):
+        from live_news_wall.app import main
+
+        monkeypatch.chdir(tmp_path)
+        target = tmp_path / "keep.env"
+        target.write_text("LLM_API_KEY=mine\n", encoding="utf-8")
+        with pytest.raises(SystemExit) as exc:
+            main(["--init", "--config", str(target)])
+        assert exc.value.code == 1
+        assert target.read_text(encoding="utf-8") == "LLM_API_KEY=mine\n"
+
+    def test_every_placeholder_in_the_docs_is_recognised(self):
+        """Docs and code must not drift: a copy-pasted placeholder key must
+        leave the app in its clean 'no key configured' mode, not make it
+        authenticate with nonsense."""
+        import re
+        from live_news_wall.config_loader import PLACEHOLDER_KEYS
+
+        root = pathlib.Path(__file__).resolve().parents[1]
+        docs = [root / "README.md", root / "manual.md", root / "BUILD_NOTES.md",
+                root / ".github" / "RELEASE_NOTES.md",
+                root / "live_news_wall" / "env.example"]
+        found = set()
+        for doc in docs:
+            if not doc.exists():
+                continue
+            for m in re.finditer(r"LLM_API_KEY=([^\s`'\"]+)", doc.read_text(encoding="utf-8")):
+                found.add(m.group(1))
+        unrecognised = {v for v in found if v not in PLACEHOLDER_KEYS}
+        assert not unrecognised, (
+            f"placeholder(s) used in docs but not in PLACEHOLDER_KEYS: {unrecognised}"
+        )
+
+    def test_placeholder_key_leaves_the_app_degraded_not_failing(self, tmp_path, monkeypatch):
+        from live_news_wall.config_loader import load_config
+
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv("LLM_API_KEY", raising=False)
+        env = tmp_path / "ph.env"
+        env.write_text("LLM_API_KEY=your-key-here\n", encoding="utf-8")
+        assert load_config(str(env)).has_api_key is False

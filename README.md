@@ -60,13 +60,13 @@ Or from a clone:
 python -m venv .venv && . .venv/bin/activate && pip install -e .
 ```
 
-Add your OpenAI-compatible API key:
+Create a starter configuration — this works the same in bash, zsh, PowerShell, and cmd:
 
 ```bash
-cp config/.env.example config/.env
+live-news-wall --init
 ```
 
-Put the key in `LLM_API_KEY`, then start it:
+Put your key in the `LLM_API_KEY` line of the `config/.env` it writes, then start it:
 
 ```bash
 live-news-wall

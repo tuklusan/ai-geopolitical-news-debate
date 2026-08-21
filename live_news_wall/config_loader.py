@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from importlib import resources
 from typing import Optional
 
 try:
@@ -66,11 +67,39 @@ DEFAULTS = {
     "TYPING_CHARS_PER_SECOND": "25",
 }
 
+# Values that mean "the user has not filled this in yet". Treating one as a
+# real key makes the app authenticate with nonsense and log a wall of 401s
+# instead of reporting, once, that no key is configured. Every placeholder
+# that appears in the documentation must be listed here; a test enforces it.
 PLACEHOLDER_KEYS = {
     "replace-with-your-real-api-key",
     "your-api-key-here",
+    "your-key-here",
+    "your-real-api-key-here",
+    "your-nvidia-api-key",
+    "nvapi-your-key-here",
+    "sk-your-key-here",
     "changeme",
+    "change-me",
+    "todo",
+    "xxx",
 }
+
+
+CONFIG_TEMPLATE_NAME = "env.example"
+
+
+def read_config_template() -> str:
+    """Return the packaged starter configuration.
+
+    Shipped inside the package rather than left in the source tree, so a
+    user who installed the wheel has it too.
+    """
+    return (
+        resources.files(__package__)
+        .joinpath(CONFIG_TEMPLATE_NAME)
+        .read_text(encoding="utf-8")
+    )
 
 
 class ConfigError(ValueError):

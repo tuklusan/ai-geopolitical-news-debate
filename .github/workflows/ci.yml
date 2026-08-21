@@ -61,8 +61,15 @@ jobs:
           live-news-wall --version
           live-news-wall --about
 
+      - name: Starter config can be written and then loaded
+        shell: bash
+        run: |
+          cd "$RUNNER_TEMP"
+          live-news-wall --init
+          live-news-wall --check --config config/.env
+
       - name: Configuration validates on this platform
-        run: live-news-wall --check --config config/.env.example
+        run: live-news-wall --check --config live_news_wall/env.example
 
   package:
     name: Build and verify distributions

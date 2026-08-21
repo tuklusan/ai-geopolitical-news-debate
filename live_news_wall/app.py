@@ -41,6 +41,7 @@ import argparse
 import asyncio
 import logging
 import os
+import pathlib
 from logging.handlers import RotatingFileHandler
 import signal
 import socket
@@ -48,6 +49,7 @@ import sys
 from typing import List, Optional
 
 from . import __version__
+from .config_loader import read_config_template
 from .config_loader import Config, ConfigError, load_config
 from .database import Database
 from .engine import ConversationEngine
@@ -226,6 +228,28 @@ file distributed with this software for the full terms.
 """
 
 
+def write_starter_config(path: str) -> int:
+    """Create a starter dotenv file. Returns a process exit code.
+
+    Doing this in Python rather than documenting a shell one-liner keeps
+    setup identical on every platform: ``printf`` does not exist in
+    PowerShell, and a wheel install has no checked-out example file to copy.
+    """
+    target = pathlib.Path(path)
+    if target.exists():
+        print(f"{target} already exists; not overwriting it.", file=sys.stderr)
+        return 1
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(read_config_template(), encoding="utf-8")
+    except OSError as exc:
+        print(f"Could not write {target}: {exc}", file=sys.stderr)
+        return 1
+    print(f"Wrote {target}")
+    print("Set LLM_API_KEY in that file, then run: live-news-wall")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Command-line interface for the console script."""
     parser = argparse.ArgumentParser(
@@ -241,6 +265,8 @@ def build_parser() -> argparse.ArgumentParser:
                         help="dotenv file to read (default: config/.env)")
     parser.add_argument("--host", help="override the bind address")
     parser.add_argument("--port", type=int, help="override the listen port")
+    parser.add_argument("--init", action="store_true",
+                        help="write a starter config file and exit")
     parser.add_argument("--check", action="store_true",
                         help="validate configuration and exit without serving")
     return parser
@@ -252,6 +278,8 @@ def main(argv: Optional[List[str]] = None) -> None:
     if args.about:
         print(ABOUT)
         return
+    if args.init:
+        sys.exit(write_starter_config(args.config))
     # Command line beats the environment, which beats the dotenv file.
     if args.host is not None:
         os.environ["HOST"] = args.host
