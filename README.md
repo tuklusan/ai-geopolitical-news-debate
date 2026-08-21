@@ -33,8 +33,16 @@ A speaker is chosen at random each turn, never twice in a row, with anyone who h
 
 Requires **Python 3.12+**. No Node, npm, Nginx, Apache, Flask, or FastAPI.
 
+Install the released wheel — it is pure Python, so the same file works on Linux, macOS, and Windows, x86-64 and arm64:
+
 ```bash
-python -m venv .venv && . .venv/bin/activate && pip install -r requirements.txt
+pip install live_news_wall-1.0.0-py3-none-any.whl
+```
+
+Or from a clone:
+
+```bash
+python -m venv .venv && . .venv/bin/activate && pip install -e .
 ```
 
 Add your OpenAI-compatible API key:
@@ -46,8 +54,12 @@ cp config/.env.example config/.env
 Put the key in `LLM_API_KEY`, then start it:
 
 ```bash
-python live_news_wall.py
+live-news-wall
 ```
+
+`live-news-wall --check` validates configuration without starting the server, `--about` prints the licence and parody notice, and `--host`/`--port`/`--config` override the file.
+
+Equivalent forms: `python -m live_news_wall` from anywhere, or `python -m live_news_wall.app` from a clone.
 
 Open **http://localhost:8765/**. The startup log prints every LAN address the wall is reachable on, so you can open it from a tablet or a TV on the same network.
 

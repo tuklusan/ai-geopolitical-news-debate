@@ -38,11 +38,11 @@ from aiohttp.test_utils import TestClient, TestServer
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from database import Database
-from engine import ConversationEngine
-from feed import FeedItem
-from personas import persona_keys
-from web_server import WebServer
+from live_news_wall.database import Database
+from live_news_wall.engine import ConversationEngine
+from live_news_wall.feed import FeedItem
+from live_news_wall.personas import persona_keys
+from live_news_wall.web_server import WebServer
 
 
 @dataclass
@@ -441,7 +441,7 @@ class TestHardening:
         db.close()
 
     def test_error_bodies_never_leak_the_api_key(self):
-        from llm_client import LLMClient
+        from live_news_wall.llm_client import LLMClient
 
         # Deliberately not shaped like a real provider key, so repository
         # secret scanners do not flag this fixture.
@@ -453,13 +453,13 @@ class TestHardening:
         assert "[REDACTED]" in redacted
 
     def test_redact_handles_empty_input(self):
-        from llm_client import LLMClient
+        from live_news_wall.llm_client import LLMClient
 
         client = LLMClient("http://x/v1", "m", "key")
         assert client._redact("") == ""
 
     def test_html_caps_rendered_messages(self):
-        from web_server import build_html_page
+        from live_news_wall.web_server import build_html_page
 
         html = build_html_page()
         assert "MAX_RENDERED" in html
@@ -538,7 +538,7 @@ class TestIdleBehaviour:
 
 class TestFeedParsing:
     def test_plain_rss_item(self):
-        from feed import parse_rss
+        from live_news_wall.feed import parse_rss
 
         xml = """<rss><channel>
           <item><title>Plain headline</title>
@@ -552,7 +552,7 @@ class TestFeedParsing:
 
     def test_atom_style_link_is_not_dropped(self):
         """An empty atom:link must not shadow the real URL."""
-        from feed import parse_rss
+        from live_news_wall.feed import parse_rss
 
         xml = """<rss xmlns:atom="http://www.w3.org/2005/Atom"><channel>
           <item><title>Namespaced headline</title>
@@ -568,28 +568,28 @@ class TestFeedParsing:
         )
 
     def test_item_without_link_is_skipped(self):
-        from feed import parse_rss
+        from live_news_wall.feed import parse_rss
 
         xml = "<rss><channel><item><title>No link</title></item></channel></rss>"
         assert parse_rss(xml) == []
 
     def test_malformed_xml_does_not_raise(self):
-        from feed import parse_rss
+        from live_news_wall.feed import parse_rss
 
         assert isinstance(parse_rss("<rss><channel><item><title>x"), list)
 
 
 class TestRepairInstructionUsesReason:
     def test_reason_is_quoted_back(self):
-        from validator import repair_instruction
-        from personas import PERSONAS
+        from live_news_wall.validator import repair_instruction
+        from live_news_wall.personas import PERSONAS
 
         msg = repair_instruction(PERSONAS["potus"], "ends mid-sentence")
         assert "ends mid-sentence" in msg
 
     def test_missing_reason_is_tolerated(self):
-        from validator import repair_instruction
-        from personas import PERSONAS
+        from live_news_wall.validator import repair_instruction
+        from live_news_wall.personas import PERSONAS
 
         msg = repair_instruction(PERSONAS["gronk"], "")
         assert "reason:" not in msg
@@ -600,7 +600,7 @@ class TestLicenceAttribution:
     """Section 1(b) requires attribution in the user-facing interface."""
 
     def test_page_carries_attribution(self):
-        from web_server import build_html_page
+        from live_news_wall.web_server import build_html_page
 
         html = build_html_page()
         assert "Based on original work by Supratim Sanyal of" in html.replace(
@@ -610,7 +610,7 @@ class TestLicenceAttribution:
 
     def test_attribution_is_outside_the_disclaimer_regions(self):
         """It must not dilute or displace the parody notices."""
-        from web_server import build_html_page
+        from live_news_wall.web_server import build_html_page
 
         html = build_html_page()
         top = html.index('class="disclaimer top"')
@@ -623,7 +623,7 @@ class TestPollBackoff:
     """Item 1: client backoff, Retry-After, and the retrying indicator."""
 
     def test_page_has_backoff_machinery(self):
-        from web_server import build_html_page
+        from live_news_wall.web_server import build_html_page
 
         html = build_html_page()
         assert "MAX_BACKOFF_MS" in html
@@ -634,12 +634,12 @@ class TestPollBackoff:
 
     def test_no_fixed_interval_polling_remains(self):
         """setInterval would stack requests against a dead server."""
-        from web_server import build_html_page
+        from live_news_wall.web_server import build_html_page
 
         assert "setInterval(poll" not in build_html_page()
 
     def test_indicator_is_hidden_and_announced_politely(self):
-        from web_server import build_html_page
+        from live_news_wall.web_server import build_html_page
 
         html = build_html_page()
         i = html.index('id="retryIndicator"')
@@ -753,7 +753,7 @@ class TestClientCapacity:
         db.close()
 
     def test_config_rejects_zero_capacity(self, monkeypatch):
-        from config_loader import ConfigError, load_config
+        from live_news_wall.config_loader import ConfigError, load_config
 
         monkeypatch.setenv("MAX_CLIENTS", "0")
         with pytest.raises(ConfigError):
@@ -841,7 +841,7 @@ class TestSidebarWithoutJavaScript:
     """Item 4: the speaker panel must exist in server-rendered HTML."""
 
     def test_cards_are_in_the_raw_html_not_built_by_script(self):
-        from web_server import build_html_page
+        from live_news_wall.web_server import build_html_page
 
         html = build_html_page()
         body = html[html.index("<body>"):html.index("<script")]
@@ -855,8 +855,8 @@ class TestSidebarWithoutJavaScript:
         assert body.count('class="persona-card') == 4
 
     def test_all_four_descriptions_are_present_without_script(self):
-        from web_server import build_html_page
-        from personas import PERSONAS
+        from live_news_wall.web_server import build_html_page
+        from live_news_wall.personas import PERSONAS
 
         html = build_html_page()
         body = html[html.index("<body>"):html.index("<script")]
@@ -865,15 +865,15 @@ class TestSidebarWithoutJavaScript:
             assert p.style in body
 
     def test_script_no_longer_builds_the_sidebar(self):
-        from web_server import build_html_page
+        from live_news_wall.web_server import build_html_page
 
         html = build_html_page()
         assert "renderSidebar" not in html
         assert "container.innerHTML" not in html
 
     def test_avatars_render_and_are_hidden_from_screen_readers(self):
-        from web_server import build_html_page
-        from personas import PERSONAS
+        from live_news_wall.web_server import build_html_page
+        from live_news_wall.personas import PERSONAS
 
         html = build_html_page()
         for p in PERSONAS.values():
@@ -882,7 +882,7 @@ class TestSidebarWithoutJavaScript:
 
     def test_persona_text_is_html_escaped(self):
         """A persona field can never inject markup into the panel."""
-        from web_server import render_persona_cards
+        from live_news_wall.web_server import render_persona_cards
 
         rendered = render_persona_cards([{
             "key": "x", "avatar": "!", "display_name": "<script>alert(1)</script>",
@@ -942,7 +942,7 @@ class TestFeedRetention:
         )
 
     def test_config_rejects_a_tiny_retention(self, monkeypatch):
-        from config_loader import ConfigError, load_config
+        from live_news_wall.config_loader import ConfigError, load_config
 
         monkeypatch.setenv("FEED_RETENTION_ITEMS", "3")
         with pytest.raises(ConfigError):
@@ -963,18 +963,18 @@ class TestMandatedDisclaimer:
     """Item 6: the exact notice the specification requires."""
 
     def test_exact_text_appears_twice(self):
-        from web_server import build_html_page
+        from live_news_wall.web_server import build_html_page
 
         assert build_html_page().count(MANDATED_NOTICE) == 2
 
     def test_each_copy_is_inside_strong(self):
-        from web_server import build_html_page
+        from live_news_wall.web_server import build_html_page
 
         html = build_html_page()
         assert html.count(f"<strong>{MANDATED_NOTICE}</strong>") == 2
 
     def test_first_and_last_visible_regions(self):
-        from web_server import build_html_page
+        from live_news_wall.web_server import build_html_page
 
         html = build_html_page()
         body = html[html.index("<body>"):html.index("</body>")]
@@ -986,7 +986,7 @@ class TestMandatedDisclaimer:
         assert body[len("<body>"):top].strip(" \n<div") == ""
 
     def test_outside_the_scrolling_region(self):
-        from web_server import build_html_page
+        from live_news_wall.web_server import build_html_page
 
         html = build_html_page()
         transcript = html.index('id="transcript"')
@@ -994,18 +994,18 @@ class TestMandatedDisclaimer:
         assert html.index('class="disclaimer bottom"') > transcript
 
     def test_accessible_label_present_on_both(self):
-        from web_server import build_html_page
+        from live_news_wall.web_server import build_html_page
 
         assert build_html_page().count('aria-label="AI-generated parody warning"') == 2
 
     def test_present_without_javascript(self):
-        from web_server import build_html_page
+        from live_news_wall.web_server import build_html_page
 
         html = build_html_page()
         assert html.count(MANDATED_NOTICE, 0, html.index("<script")) == 2
 
     def test_never_truncated_collapsed_or_faded(self):
-        from web_server import build_html_page
+        from live_news_wall.web_server import build_html_page
 
         html = build_html_page()
         css = html[html.index("<style>"):html.index("</style>")]
@@ -1017,7 +1017,7 @@ class TestMandatedDisclaimer:
         assert "white-space: nowrap" not in block
 
     def test_wraps_on_narrow_screens(self):
-        from web_server import build_html_page
+        from live_news_wall.web_server import build_html_page
 
         html = build_html_page()
         css = html[html.index("<style>"):html.index("</style>")]
@@ -1028,7 +1028,7 @@ class TestMandatedDisclaimer:
 
     def test_no_per_bubble_warning(self):
         """A bubble carries avatar, speaker name, and message text only."""
-        from web_server import build_html_page
+        from live_news_wall.web_server import build_html_page
 
         html = build_html_page()
         fn = html[html.index("function renderMessage"):]
@@ -1051,13 +1051,13 @@ class TestTypewriter:
     """Messages are typed out on screen, and the engine waits for it."""
 
     def test_typing_speed_is_injected_from_config(self):
-        from web_server import build_html_page
+        from live_news_wall.web_server import build_html_page
 
         assert "var TYPING_CPS = 12.5;" in build_html_page(12.5)
         assert "__TYPING_CPS__" not in build_html_page(12.5)
 
     def test_invalid_speeds_fall_back_to_the_default(self):
-        from web_server import build_html_page, DEFAULT_TYPING_CPS
+        from live_news_wall.web_server import build_html_page, DEFAULT_TYPING_CPS
 
         for bad in (0, -5, None, "fast"):
             assert f"var TYPING_CPS = {DEFAULT_TYPING_CPS!r};" in build_html_page(bad)
@@ -1072,7 +1072,7 @@ class TestTypewriter:
 
     def test_typing_never_uses_innerHTML(self):
         """The growing message must never be parsed as markup."""
-        from web_server import build_html_page
+        from live_news_wall.web_server import build_html_page
 
         html = build_html_page()
         fn = html[html.index("function pumpTypeQueue"):]
@@ -1082,14 +1082,14 @@ class TestTypewriter:
 
     def test_backlog_on_load_is_not_typed_out(self):
         """Only messages arriving after the first paint animate."""
-        from web_server import build_html_page
+        from live_news_wall.web_server import build_html_page
 
         html = build_html_page()
         assert "renderMessage(msg, firstPaintDone && !reduceMotion)" in html
         assert "firstPaintDone = true;" in html
 
     def test_reduced_motion_disables_the_effect(self):
-        from web_server import build_html_page
+        from live_news_wall.web_server import build_html_page
 
         html = build_html_page()
         assert "prefers-reduced-motion: reduce" in html
@@ -1099,7 +1099,7 @@ class TestTypewriter:
         assert "content: none" in block[:220]
 
     def test_messages_are_queued_not_typed_in_parallel(self):
-        from web_server import build_html_page
+        from live_news_wall.web_server import build_html_page
 
         html = build_html_page()
         assert "if (typingActive) return;" in html
@@ -1114,13 +1114,13 @@ class TestTypewriter:
         assert eng._typing_seconds(100) == 10.0
 
     def test_typing_wait_is_capped(self, db):
-        from engine import MAX_TYPING_WAIT_SECONDS
+        from live_news_wall.engine import MAX_TYPING_WAIT_SECONDS
 
         eng = make_engine(db, CountingLLM(), ListFeed([]), typing_chars_per_second=1.0)
         assert eng._typing_seconds(100000) == MAX_TYPING_WAIT_SECONDS
 
     def test_bad_typing_speed_falls_back(self, db):
-        from engine import DEFAULT_TYPING_CPS
+        from live_news_wall.engine import DEFAULT_TYPING_CPS
 
         eng = make_engine(db, CountingLLM(), ListFeed([]), typing_chars_per_second=0)
         assert eng._typing_seconds(DEFAULT_TYPING_CPS) == 1.0
@@ -1147,14 +1147,14 @@ class TestTypewriter:
         eng = make_engine(db, CountingLLM(), feed, typing_chars_per_second=10.0)
         await eng.refresh_feed()
         eng._running = True
-        with patch("engine.asyncio.sleep", fake_sleep):
+        with patch("live_news_wall.engine.asyncio.sleep", fake_sleep):
             with pytest.raises(asyncio.CancelledError):
                 await eng._conversation_loop()
         assert slept, "the loop must wait after producing a message"
         assert slept[0] == pytest.approx(eng._last_message_chars / 10.0)
 
     def test_config_rejects_a_non_positive_speed(self, monkeypatch):
-        from config_loader import ConfigError, load_config
+        from live_news_wall.config_loader import ConfigError, load_config
 
         monkeypatch.setenv("TYPING_CHARS_PER_SECOND", "0")
         with pytest.raises(ConfigError):
@@ -1162,7 +1162,7 @@ class TestTypewriter:
 
     def test_typing_is_time_derived_not_tick_counted(self):
         """A throttled tab must catch up, not type for minutes."""
-        from web_server import build_html_page
+        from live_news_wall.web_server import build_html_page
 
         html = build_html_page()
         fn = html[html.index("function pumpTypeQueue"):]
@@ -1172,8 +1172,8 @@ class TestTypewriter:
 
     def test_typing_duration_matches_engine_pacing(self, db):
         """Client typing time and server wait are the same figure."""
-        from web_server import DEFAULT_TYPING_CPS as WEB_CPS
-        from engine import DEFAULT_TYPING_CPS as ENGINE_CPS
+        from live_news_wall.web_server import DEFAULT_TYPING_CPS as WEB_CPS
+        from live_news_wall.engine import DEFAULT_TYPING_CPS as ENGINE_CPS
 
         assert WEB_CPS == ENGINE_CPS
         eng = make_engine(db, CountingLLM(), ListFeed([]), typing_chars_per_second=WEB_CPS)
@@ -1208,8 +1208,8 @@ class TestBoundedGrowth:
     @pytest.mark.asyncio
     async def test_speaker_history_never_trimmed_below_the_window(self, db):
         """The selector reads a window; trimming under it would break it."""
-        from database import SPEAKER_HISTORY_FLOOR
-        from engine import SPEAKER_WINDOW
+        from live_news_wall.database import SPEAKER_HISTORY_FLOOR
+        from live_news_wall.engine import SPEAKER_WINDOW
 
         assert SPEAKER_HISTORY_FLOOR >= SPEAKER_WINDOW
         for i in range(200):
@@ -1269,11 +1269,12 @@ class TestBoundedGrowth:
 
     def test_access_logging_is_disabled(self):
         """Per-request logging dominated the log file: ~95% of all lines."""
-        src = pathlib.Path(__file__).resolve().parents[1] / "web_server.py"
+        src = (pathlib.Path(__file__).resolve().parents[1]
+               / "live_news_wall" / "web_server.py")
         assert "access_log=None" in src.read_text(encoding="utf-8")
 
     def test_config_rejects_a_tiny_transcript_cap(self, monkeypatch):
-        from config_loader import ConfigError, load_config
+        from live_news_wall.config_loader import ConfigError, load_config
 
         monkeypatch.setenv("TRANSCRIPT_RETENTION_MESSAGES", "10")
         with pytest.raises(ConfigError):
@@ -1283,8 +1284,8 @@ class TestBoundedGrowth:
         """A nohup deployment must not accumulate an unbounded log."""
         import logging
         from logging.handlers import RotatingFileHandler
-        import live_news_wall
-        from config_loader import load_config
+        import live_news_wall.app as live_news_wall
+        from live_news_wall.config_loader import load_config
 
         monkeypatch.delenv("LOG_FILE", raising=False)
         path = tmp_path / "wall.log"
@@ -1318,8 +1319,8 @@ class TestBoundedGrowth:
                     root.removeHandler(h)
 
     def test_no_log_file_means_stderr_only(self, monkeypatch, tmp_path):
-        import live_news_wall
-        from config_loader import load_config
+        import live_news_wall.app as live_news_wall
+        from live_news_wall.config_loader import load_config
 
         monkeypatch.delenv("LOG_FILE", raising=False)
         env = tmp_path / ".env"
@@ -1328,7 +1329,7 @@ class TestBoundedGrowth:
 
     def test_rotation_is_on_by_default(self):
         """Shipped defaults must bound the log without any user action."""
-        from config_loader import DEFAULTS
+        from live_news_wall.config_loader import DEFAULTS
 
         assert DEFAULTS["LOG_FILE"].strip(), "rotation must ship enabled"
         assert int(DEFAULTS["LOG_MAX_BYTES"]) >= 1024
@@ -1339,8 +1340,8 @@ class TestBoundedGrowth:
         so setting it in config/.env silently did nothing."""
         import logging
         from logging.handlers import RotatingFileHandler
-        import live_news_wall
-        from config_loader import load_config
+        import live_news_wall.app as live_news_wall
+        from live_news_wall.config_loader import load_config
 
         monkeypatch.delenv("LOG_FILE", raising=False)
         target = tmp_path / "from_env_file.log"
@@ -1363,8 +1364,8 @@ class TestBoundedGrowth:
                     root.removeHandler(h)
 
     def test_unwritable_log_path_degrades_instead_of_crashing(self, tmp_path, monkeypatch):
-        import live_news_wall
-        from config_loader import load_config
+        import live_news_wall.app as live_news_wall
+        from live_news_wall.config_loader import load_config
 
         monkeypatch.delenv("LOG_FILE", raising=False)
         bad = tmp_path / "no-such-dir" / "deep" / "wall.log"
@@ -1385,7 +1386,7 @@ class TestBoundedGrowth:
         assert len(await db.get_messages(limit=1000)) <= 120
 
     def test_log_config_is_validated(self, monkeypatch):
-        from config_loader import ConfigError, load_config
+        from live_news_wall.config_loader import ConfigError, load_config
 
         monkeypatch.setenv("LOG_MAX_BYTES", "10")
         with pytest.raises(ConfigError):
@@ -1427,3 +1428,66 @@ class TestPruningIndependence:
         with patch.object(db, "prune_transcript", boom):
             await eng.refresh_feed()          # must not raise
         assert await db.count_feed_items() <= 11
+
+
+class TestCommandLine:
+    """The console script must be usable without starting a server."""
+
+    def test_version_exits_zero_and_prints_version(self, capsys):
+        from live_news_wall.app import main
+        from live_news_wall import __version__
+
+        with pytest.raises(SystemExit) as exc:
+            main(["--version"])
+        assert exc.value.code == 0
+        assert __version__ in capsys.readouterr().out
+
+    def test_about_shows_attribution_and_parody_notice(self, capsys):
+        from live_news_wall.app import main
+
+        main(["--about"])
+        out = capsys.readouterr().out
+        assert "Based on original work by Supratim Sanyal of SANYALnet Labs." in out
+        assert "parody" in out.lower()
+        assert "Non-Commercial" in out
+
+    def test_help_exits_zero(self, capsys):
+        from live_news_wall.app import main
+
+        with pytest.raises(SystemExit) as exc:
+            main(["--help"])
+        assert exc.value.code == 0
+        assert "live-news-wall" in capsys.readouterr().out
+
+    def test_check_validates_without_serving(self, tmp_path, monkeypatch):
+        from live_news_wall.app import main
+
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv("LLM_API_KEY", raising=False)
+        env = tmp_path / "my.env"
+        env.write_text("PORT=9099\nLOG_FILE=\n", encoding="utf-8")
+        main(["--check", "--config", str(env)])   # returns, does not bind
+
+    def test_check_reports_bad_config_with_exit_code_2(self, tmp_path, monkeypatch):
+        from live_news_wall.app import main
+
+        monkeypatch.chdir(tmp_path)
+        # PORT must be absent, or load_dotenv keeps the existing value and
+        # the malformed one in the file is never parsed.
+        monkeypatch.delenv("PORT", raising=False)
+        env = tmp_path / "bad.env"
+        env.write_text("PORT=notanumber\n", encoding="utf-8")
+        with pytest.raises(SystemExit) as exc:
+            main(["--check", "--config", str(env)])
+        assert exc.value.code == 2
+
+    def test_cli_port_overrides_the_dotenv_file(self, tmp_path, monkeypatch):
+        from live_news_wall.app import build_parser
+        from live_news_wall.config_loader import load_config
+
+        monkeypatch.chdir(tmp_path)
+        env = tmp_path / "p.env"
+        env.write_text("PORT=8765\n", encoding="utf-8")
+        args = build_parser().parse_args(["--port", "9123", "--config", str(env)])
+        monkeypatch.setenv("PORT", str(args.port))
+        assert load_config(str(env)).port == 9123

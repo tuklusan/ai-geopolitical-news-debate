@@ -27,9 +27,9 @@ import pytest_asyncio
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from database import Database
-from engine import ConversationEngine
-from personas import PERSONAS, persona_keys
+from live_news_wall.database import Database
+from live_news_wall.engine import ConversationEngine
+from live_news_wall.personas import PERSONAS, persona_keys
 from tests import fixtures
 
 
@@ -173,7 +173,7 @@ class TestTopicManagement:
     async def test_no_topic_churn_on_unchanged_feed(self, db):
         """refresh_feed should not create a new topic when the newest
         item title matches the currently active topic."""
-        from feed import FeedItem
+        from live_news_wall.feed import FeedItem
 
         class StableFeed:
             async def fetch_items(self, session=None):
@@ -207,7 +207,7 @@ class TestTopicManagement:
     async def test_topic_changes_on_new_headline(self, db):
         """refresh_feed should create a new topic when a different newest
         item appears, and discard stale recent lines."""
-        from feed import FeedItem
+        from live_news_wall.feed import FeedItem
 
         class ChangingFeed:
             def __init__(self):

@@ -30,11 +30,11 @@ from typing import List, Optional, Tuple
 
 import aiohttp
 
-from database import Database, QueuedItem, StoredTopic
-from feed import FeedClient, FeedItem
-from llm_client import LLMClient
-from personas import Persona, PERSONAS, persona_keys
-from validator import ValidationResult, validate_output, repair_instruction
+from .database import Database, QueuedItem, StoredTopic
+from .feed import FeedClient, FeedItem
+from .llm_client import LLMClient
+from .personas import Persona, PERSONAS, persona_keys
+from .validator import ValidationResult, validate_output, repair_instruction
 
 logger = logging.getLogger("live_news_wall.engine")
 

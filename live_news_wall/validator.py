@@ -26,7 +26,7 @@ import re
 from dataclasses import dataclass
 from typing import Optional, Tuple
 
-from personas import Persona
+from .personas import Persona
 
 
 # Characters that may legitimately end a complete sentence/poem line.

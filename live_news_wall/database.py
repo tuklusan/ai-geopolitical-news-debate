@@ -187,7 +187,7 @@ class Database:
                 )
         if "norm_link" not in item_cols:
             # Backfill so rows stored before three-tier dedup still match.
-            from feed import normalize_link
+            from .feed import normalize_link
 
             for row in c.execute("SELECT link FROM known_feed_items").fetchall():
                 c.execute(
@@ -433,7 +433,7 @@ class Database:
 
     async def add_known_item(self, link: str, title: str, summary: str) -> None:
         """Store an item known only by its link (kept for direct callers)."""
-        from feed import normalize_link, title_hash
+        from .feed import normalize_link, title_hash
 
         async with self._lock:
             self._conn.execute(

@@ -13,7 +13,7 @@
 # ============================================================================
 
 """
-Unit tests for model-output validation (validator.py).
+Unit tests for model-output validation (live_news_wall/validator.py).
 
 Proves that valid plain-text is accepted, fenced JSON is rejected or safely
 extracted, incomplete JSON is rejected, raw dictionaries are rejected, code
@@ -24,8 +24,8 @@ and Gronk produces exactly three valid lines.
 import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from personas import PERSONAS
-from validator import validate_output, strip_fences, repair_instruction
+from live_news_wall.personas import PERSONAS
+from live_news_wall.validator import validate_output, strip_fences, repair_instruction
 from tests.fixtures import (
     VALID_POTUS, VALID_EU, VALID_GRONK, VALID_YODA,
     MALFORMED_FENCED_JSON, MALFORMED_INCOMPLETE_JSON, MALFORMED_PYDICT,
@@ -189,7 +189,7 @@ class TestYamlGuardRegression:
         assert not validate_output(text, PERSONAS["potus"]).ok
 
     def test_terminators_are_matched_per_character(self):
-        from validator import _TERMINATORS
+        from live_news_wall.validator import _TERMINATORS
 
         assert "Ends with a period.".endswith(tuple(_TERMINATORS))
         assert not "Ends with a period.".endswith(_TERMINATORS)
@@ -203,13 +203,13 @@ class TestPersonaRegistryConsistency:
     """
 
     def test_keys_match_the_registry(self):
-        from personas import PERSONAS, persona_keys
+        from live_news_wall.personas import PERSONAS, persona_keys
 
         assert list(persona_keys()) == list(PERSONAS.keys())
         assert set(persona_keys()) == set(PERSONAS)
 
     def test_every_persona_is_completely_specified(self):
-        from personas import PERSONAS
+        from live_news_wall.personas import PERSONAS
 
         for key, p in PERSONAS.items():
             assert p.key == key, f"{key} disagrees with its registry key"
@@ -218,7 +218,7 @@ class TestPersonaRegistryConsistency:
             assert p.system_prompt.strip()
 
     def test_public_info_covers_every_persona(self):
-        from personas import PERSONAS, persona_public_info
+        from live_news_wall.personas import PERSONAS, persona_public_info
 
         info = persona_public_info()
         assert len(info) == len(PERSONAS)

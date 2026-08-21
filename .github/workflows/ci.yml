@@ -1,0 +1,114 @@
+# Copyright (c) 2026 Supratim Sanyal of SANYALnet Labs.
+# Governed by the SANYALnet Labs Non-Commercial License in the root LICENSE file.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+  # Reused by the release workflow so a tag cannot ship untested code.
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: ${{ matrix.os }} / py${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - ubuntu-22.04
+          - ubuntu-24.04-arm
+          - windows-latest
+          - windows-2022
+          - windows-11-arm
+          - macos-latest
+          - macos-15
+          - macos-13
+        python: ["3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Install package and test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[test]"
+
+      - name: Run the test suite
+        run: python -m pytest -q
+
+      - name: Byte-compile every source file
+        run: python -m compileall -q live_news_wall tests
+
+      - name: Console script responds without starting a server
+        run: |
+          live-news-wall --version
+          live-news-wall --about
+
+      - name: Configuration validates on this platform
+        run: live-news-wall --check --config config/.env.example
+
+  package:
+    name: Build and verify distributions
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build sdist and wheel
+        run: |
+          python -m pip install --upgrade pip build twine
+          python -m build
+      - name: Check distribution metadata
+        run: python -m twine check dist/*
+      - name: Confirm the wheel is platform independent
+        run: |
+          ls dist/
+          test -n "$(ls dist/*-py3-none-any.whl 2>/dev/null)" \
+            || { echo "expected a pure-Python wheel"; exit 1; }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: distributions
+          path: dist/
+
+  install-from-wheel:
+    name: Install wheel on ${{ matrix.os }}
+    needs: package
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm, windows-latest, windows-11-arm, macos-latest, macos-13]
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@v4
+        with:
+          name: distributions
+          path: dist
+      - name: Install the built wheel into a clean environment
+        shell: bash
+        run: python -m pip install "$(ls dist/*.whl)"
+      - name: Run it from a directory that is not the source tree
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/elsewhere"
+          cd "$RUNNER_TEMP/elsewhere"
+          live-news-wall --version
+          live-news-wall --about
+          python -c "import live_news_wall; print('import ok', live_news_wall.__version__)"

@@ -29,9 +29,9 @@ from typing import Optional
 
 from aiohttp import web
 
-import personas as persona_mod
-from database import Database
-from engine import ConversationEngine
+from . import personas as persona_mod
+from .database import Database
+from .engine import ConversationEngine
 
 logger = logging.getLogger("live_news_wall.web")
 

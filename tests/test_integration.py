@@ -27,9 +27,9 @@ from aiohttp.test_utils import TestClient, TestServer
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from database import Database
-from engine import ConversationEngine
-from web_server import WebServer, build_html_page
+from live_news_wall.database import Database
+from live_news_wall.engine import ConversationEngine
+from live_news_wall.web_server import WebServer, build_html_page
 from tests import fixtures
 
 
@@ -243,7 +243,7 @@ class TestStartupFailureCleanup:
     async def test_engine_session_closed_on_web_start_failure(self):
         """If web.start() raises after engine.start(), the engine's
         ClientSession must be closed, not left dangling."""
-        from live_news_wall import Application
+        from live_news_wall.app import Application
 
         app = Application.__new__(Application)
         app._cfg = MagicMock()

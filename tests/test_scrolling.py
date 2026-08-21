@@ -28,7 +28,7 @@ same algorithm. This verifies:
 - behavior remains correct after multiple messages;
 - the newest message is fully visible (not hidden behind bottom bar).
 
-The same logic is mirrored in the JavaScript in web_server.py.
+The same logic is mirrored in the JavaScript in live_news_wall/web_server.py.
 """
 import os
 import sys
