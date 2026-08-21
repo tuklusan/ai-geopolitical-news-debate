@@ -1,4 +1,6 @@
-Four AI parodies argue about live business headlines, forever, on any spare screen.
+**Live News Debate Wall 1.0** — a self-hosted AI news debate for any spare screen. Four AI parodies argue about live RSS headlines, forever, in a single Python `asyncio` process with no web server, no Node, and no Docker required.
+
+Install it with one `pip` command on Linux, macOS, or Windows and it is running about a minute later, on a free open-weight model.
 
 This is the first stable release. It is the corrected, hardened descendant of the application ChatDev's agents generated from a single prompt — see [the article](https://supratim-sanyal.blogspot.com/2026/07/build-live-ai-news-debate-wall-chatdev-linux.html) for how that build went, and the commit history for everything fixed since.
 
@@ -7,8 +9,10 @@ This is the first stable release. It is the corrected, hardened descendant of th
 The application is pure Python, so **one wheel works on every platform** — Linux, macOS, and Windows, x86-64 and arm64 alike. There is nothing to compile and no per-platform installer to choose between.
 
 ```bash
-pip install live_news_wall-1.0.0-py3-none-any.whl
+pip install https://github.com/tuklusan/ai-geopolitical-news-debate/releases/download/v1.0.0/live_news_wall-1.0.0-py3-none-any.whl
 ```
+
+Or download the wheel below and `pip install` it. Checksums are in `SHA256SUMS.txt`.
 
 Then set a key and run it:
 
@@ -21,9 +25,23 @@ Open <http://localhost:8765/>. Use `live-news-wall --check` to validate configur
 
 Any OpenAI-compatible endpoint works via `LLM_BASE_URL` and `LLM_MODEL`. Without a key the server still starts and still polls the feed, reporting the model as unavailable rather than crashing.
 
-## Verified on
+## Tested on every available GitHub runner
 
-Every GitHub-hosted runner family, on Python 3.12 and 3.13: Ubuntu 24.04 and 22.04 (x64 and arm64), Windows Server 2025 and 2022 (x64 and arm64), and macOS 15, 14, and 13 (Apple silicon and Intel). The wheel is additionally installed and executed from a clean environment on each platform family.
+All eight runner images GitHub currently provides, on Python 3.12 and 3.13 — 16 test jobs:
+
+| Linux | Windows | macOS |
+|---|---|---|
+| Ubuntu 24.04 (x64) | Windows Server 2025 (x64) | macOS 15 (Apple silicon) |
+| Ubuntu 24.04 (arm64) | Windows Server 2022 (x64) | macOS 14 (Apple silicon) |
+| Ubuntu 22.04 (x64) | Windows 11 (arm64) | |
+
+The built wheel is then installed and executed from a clean directory outside the source tree on five of those platforms.
+
+macOS 13 (Intel) is not listed because GitHub has retired that image — jobs targeting it are never assigned a runner. Intel Macs install and run the identical `py3-none-any` artifact the Apple-silicon runners verify.
+
+## Good for
+
+An office or lab display, a booth or shop-window attractor loop, a Raspberry Pi kiosk, a worked example of a long-running `asyncio` service, or a way to watch how a free LLM endpoint really behaves over thousands of unattended turns.
 
 ## What it does
 

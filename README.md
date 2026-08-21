@@ -5,9 +5,9 @@
 [![Python](https://img.shields.io/badge/python-3.12%20%7C%203.13-blue)](https://www.python.org/)
 [![Licence](https://img.shields.io/badge/licence-SANYALnet%20Non--Commercial-lightgrey)](LICENSE)
 
-**A wall-mounted argument that never ends.** Point a spare monitor at it and four AI parodies — an American president, a European Commission president, a Vogon bureaucrat who only speaks in haiku, and a certain small green Jedi — will bicker about real business headlines, forever, one short message at a time.
+**An AI news debate that never ends.** Point a spare monitor at it and four AI parodies — an American president, a European Commission president, a Vogon bureaucrat who only speaks in haiku, and a certain small green Jedi — will argue about real business headlines, forever, one typed message at a time. [Version 1.0 is out](https://github.com/tuklusan/ai-geopolitical-news-debate/releases/latest), it installs with one `pip` command on Linux, macOS, or Windows, and it is running about a minute later.
 
-It pulls live stories from the France 24 Business RSS feed, gives each headline eight to twelve turns of debate, then moves on to the next one. It remembers what has already been said so nobody repeats themselves. It survives the feed going down, the model going down, and being killed mid-sentence. It is one Python file's worth of dependencies and no web server at all.
+It is a self-hosted Python application: an RSS reader, a persona-driven LLM conversation engine, and its own web server in one `asyncio` process. It pulls live stories from a news feed, gives each headline eight to twelve turns of debate, then moves on. It remembers what has already been said so nobody repeats themselves. It survives the feed going down, the model going down, and being killed mid-sentence — and it runs happily for months on free, open-weight models.
 
 📖 **The full story of how this was built — by a virtual software company of AI agents, in 13 steps — is on the blog: [Build and Run a Live AI News Debate Wall with ChatDev on Linux](https://supratim-sanyal.blogspot.com/2026/07/build-live-ai-news-debate-wall-chatdev-linux.html)** (Part 2 of the ChatDev series).
 
@@ -33,6 +33,14 @@ The full notice is pinned to the top and bottom of the browser window, verbatim,
 | 🟢 **Yoda** | Terse, inverted, reflective. Balance and patience, he speaks of. |
 
 A speaker is chosen at random each turn, never twice in a row, with anyone who has dominated the last eight turns damped down so the conversation stays balanced without falling into a predictable rotation.
+
+## What people use it for
+
+- **An office or lab screen** that is more interesting than a dashboard nobody reads.
+- **A conference-booth or shop-window attractor loop** — it needs no interaction and never ends.
+- **A home lab / Raspberry Pi kiosk** display, since it is one process with no reverse proxy.
+- **A worked example** of a long-running `asyncio` service: RSS polling, an LLM client with pacing and retries, SQLite persistence, a hand-written HTTP API, and a no-framework front end, all under 3,000 lines with tests.
+- **A test bed for free LLM endpoints** — point `LLM_BASE_URL` anywhere OpenAI-compatible and watch how a model actually behaves over thousands of unattended turns.
 
 ## Quick start
 
@@ -196,6 +204,32 @@ gives you two writers on one file, and the redirect keeps writing to the
 renamed inode the moment rotation happens.
 
 For a non-root `systemd` unit, `WorkingDirectory` should be the project directory and `ExecStart` the interpreter in `.venv`. `SIGINT` and `SIGTERM` are both handled: new work stops, tasks are cancelled, and SQLite and the HTTP sessions are closed before exit.
+
+## Frequently asked questions
+
+**Does it cost anything to run?**
+No. It ships pointed at a free open-weight model on NVIDIA NIM; get a key at [build.nvidia.com](https://build.nvidia.com) and there is no paid account or credit balance involved. Any OpenAI-compatible endpoint works instead — a local Ollama or vLLM server included.
+
+**Can I run it without an API key?**
+Yes. The server starts, the RSS reader keeps polling, and the page reports the model as unavailable instead of crashing. Useful for checking the layout.
+
+**Which platforms does it run on?**
+Linux, macOS, and Windows, on x86-64 and arm64. The wheel is pure Python (`py3-none-any`), so one file installs everywhere, and every push is tested on all eight GitHub-hosted runner images against Python 3.12 and 3.13.
+
+**Can I use a different news feed?**
+Any RSS 2.0 feed — set `RSS_FEED_URL`. The default is France 24 Business. Nothing about the code is specific to business news.
+
+**Can I change the speakers?**
+Yes, they are plain data in `live_news_wall/personas.py`: a name, an avatar, a word limit, and a system prompt. Add or replace them and the weighted speaker selection adapts automatically.
+
+**Does it need a web server, Docker, or Node?**
+None of them. It serves its own HTML, CSS, and JavaScript from `aiohttp` in the same process. There is no build step and no `node_modules`.
+
+**Will it fill my disk if I leave it running?**
+No. The transcript, feed table, speaker history, and topic memory are all pruned on a schedule, and the log file rotates by default. See [Disk usage](#disk-usage).
+
+**Is any of it real?**
+No. Every message is generated by a language model for parody and software demonstration, and the page says so, permanently, at the top and bottom.
 
 ## Provenance
 
