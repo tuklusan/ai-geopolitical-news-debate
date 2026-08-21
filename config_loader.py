@@ -48,6 +48,8 @@ DEFAULTS = {
     "MESSAGE_MAX_DELAY_SECONDS": "6",
     "TOPIC_TURNS_MIN": "8",
     "TOPIC_TURNS_MAX": "12",
+    "MAX_CLIENTS": "1024",
+    "FEED_RETENTION_ITEMS": "500",
 }
 
 PLACEHOLDER_KEYS = {
@@ -80,6 +82,8 @@ class Config:
     message_max_delay_seconds: float
     topic_turns_min: int
     topic_turns_max: int
+    max_clients: int
+    feed_retention_items: int
 
     @property
     def has_api_key(self) -> bool:
@@ -102,6 +106,8 @@ class Config:
                 self.message_max_delay_seconds,
             ),
             "topic_turns": (self.topic_turns_min, self.topic_turns_max),
+            "max_clients": self.max_clients,
+            "feed_retention_items": self.feed_retention_items,
         }
 
 
@@ -165,6 +171,8 @@ def load_config(env_file: str = "config/.env") -> Config:
     )
     turns_min = _as_number(_get("TOPIC_TURNS_MIN"), "TOPIC_TURNS_MIN", int)
     turns_max = _as_number(_get("TOPIC_TURNS_MAX"), "TOPIC_TURNS_MAX", int)
+    max_clients = _as_number(_get("MAX_CLIENTS"), "MAX_CLIENTS", int)
+    retention = _as_number(_get("FEED_RETENTION_ITEMS"), "FEED_RETENTION_ITEMS", int)
 
     if not 1 <= port <= 65535:
         raise ConfigError(f"PORT must be between 1 and 65535, got {port}")
@@ -183,6 +191,10 @@ def load_config(env_file: str = "config/.env") -> Config:
         raise ConfigError(
             f"TOPIC_TURNS_MAX ({turns_max}) is below TOPIC_TURNS_MIN ({turns_min})"
         )
+    if max_clients < 1:
+        raise ConfigError(f"MAX_CLIENTS must be at least 1, got {max_clients}")
+    if retention < 10:
+        raise ConfigError(f"FEED_RETENTION_ITEMS must be at least 10, got {retention}")
     if max_tokens <= 0:
         raise ConfigError(f"LLM_MAX_TOKENS must be positive, got {max_tokens}")
     if timeout_seconds <= 0:
@@ -206,4 +218,6 @@ def load_config(env_file: str = "config/.env") -> Config:
         message_max_delay_seconds=max_delay,
         topic_turns_min=turns_min,
         topic_turns_max=turns_max,
+        max_clients=max_clients,
+        feed_retention_items=retention,
     )

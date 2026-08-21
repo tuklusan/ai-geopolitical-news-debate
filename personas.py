@@ -33,6 +33,7 @@ class Persona:
     role: str
     country: str
     style: str
+    avatar: str
     max_words: int
     max_lines: Optional[int]
     system_prompt: str
@@ -45,6 +46,7 @@ class Persona:
 PERSONAS: Dict[str, Persona] = {
     "potus": Persona(
         key="potus",
+        avatar="🦅",
         display_name="POTUS",
         role="Fictional President of the United States (office only)",
         country="United States",
@@ -60,6 +62,7 @@ PERSONAS: Dict[str, Persona] = {
     ),
     "eu": Persona(
         key="eu",
+        avatar="🇪🇺",
         display_name="President of the European Commission",
         role="Fictional President of the European Commission (office only)",
         country="European Union",
@@ -75,6 +78,7 @@ PERSONAS: Dict[str, Persona] = {
     ),
     "gronk": Persona(
         key="gronk",
+        avatar="📝",
         display_name="Gronk Vellumthud",
         role="Vogon bureaucrat and poet",
         country="Vogosphere",
@@ -91,6 +95,7 @@ PERSONAS: Dict[str, Persona] = {
     ),
     "yoda": Persona(
         key="yoda",
+        avatar="🟢",
         display_name="Yoda",
         role="Fictional Jedi master (parody)",
         country="Dagobah",
@@ -121,6 +126,7 @@ def persona_public_info() -> list:
         {
             "key": p.key,
             "display_name": p.display_name,
+            "avatar": p.avatar,
             "role": p.role,
             "country": p.country,
             "style": p.style,

@@ -31,6 +31,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 import pytest_asyncio
+from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -52,6 +53,7 @@ class FakeConfig:
     rss_refresh_interval_seconds: int = 9999
     topic_turns_min: int = 8
     topic_turns_max: int = 12
+    feed_retention_items: int = 500
 
 
 class CountingLLM:
@@ -611,3 +613,431 @@ class TestLicenceAttribution:
         bottom = html.index('class="disclaimer bottom"')
         attribution = html.index('class="attribution"')
         assert top < attribution < bottom
+
+
+class TestPollBackoff:
+    """Item 1: client backoff, Retry-After, and the retrying indicator."""
+
+    def test_page_has_backoff_machinery(self):
+        from web_server import build_html_page
+
+        html = build_html_page()
+        assert "MAX_BACKOFF_MS" in html
+        assert "backoffDelay" in html
+        assert "retryAfterMs" in html
+        assert 'id="retryIndicator"' in html
+        assert "Reconnecting" in html
+
+    def test_no_fixed_interval_polling_remains(self):
+        """setInterval would stack requests against a dead server."""
+        from web_server import build_html_page
+
+        assert "setInterval(poll" not in build_html_page()
+
+    def test_indicator_is_hidden_and_announced_politely(self):
+        from web_server import build_html_page
+
+        html = build_html_page()
+        i = html.index('id="retryIndicator"')
+        tag = html[html.rindex("<span", 0, i):html.index(">", i) + 1]
+        assert 'role="status"' in tag
+        assert 'aria-live="polite"' in tag
+        assert "hidden" in tag
+
+    def test_backoff_doubles_and_is_capped(self):
+        """Python mirror of backoffDelay()."""
+        base, cap = 2000, 30000
+        delay, seen = base, []
+        for _ in range(8):
+            delay = min(delay * 2, cap)
+            seen.append(delay)
+        assert seen[:4] == [4000, 8000, 16000, 30000]
+        assert max(seen) == cap
+
+    def test_recovery_resets_to_base_cadence(self):
+        base, cap = 2000, 30000
+        delay = min(min(base * 2, cap) * 2, cap)
+        assert delay == 8000
+        delay = base  # success path
+        assert delay == 2000
+
+
+class TestClientCapacity:
+    """Item 2: MAX_CLIENTS load shedding with Retry-After."""
+
+    @pytest_asyncio.fixture
+    async def capped(self):
+        """A real server with a cap of one concurrent request."""
+        db = Database(":memory:")
+        db.initialize()
+        feed = MagicMock()
+        feed.fetch_items = AsyncMock(return_value=[])
+        eng = ConversationEngine(db, feed, None, FakeConfig(has_api_key=False))
+        srv = WebServer(db, eng, max_clients=1)
+
+        gate = asyncio.Event()
+
+        async def slow(request):
+            await gate.wait()
+            return web.Response(text="done")
+
+        srv._app.router.add_get("/slow", slow)
+        client = TestClient(TestServer(srv._app))
+        await client.start_server()
+        yield srv, client, gate
+        gate.set()
+        await client.close()
+        db.close()
+
+    @pytest.mark.asyncio
+    async def test_excess_request_gets_503_with_retry_after(self, capped):
+        srv, client, gate = capped
+        first = asyncio.create_task(client.get("/slow"))
+        await asyncio.sleep(0.05)          # let it occupy the only permit
+        assert srv.active_requests == 1
+
+        resp = await client.get("/healthz")
+        assert resp.status == 503
+        assert resp.headers["Retry-After"] == "5"
+        assert resp.headers["Cache-Control"] == "no-store"
+        body = await resp.json()
+        assert body["error"] == "busy"
+        assert "detail" in body and "capacity" in body["detail"]
+
+        gate.set()
+        await first
+
+    @pytest.mark.asyncio
+    async def test_permit_is_released_after_completion(self, capped):
+        srv, client, gate = capped
+        gate.set()
+        for _ in range(5):
+            assert (await client.get("/healthz")).status in (200, 503)
+        assert srv.active_requests == 0
+        # Capacity is available again once nothing is in flight.
+        assert (await client.get("/healthz")).status in (200, 503)
+
+    @pytest.mark.asyncio
+    async def test_permit_released_even_when_handler_raises(self):
+        db = Database(":memory:")
+        db.initialize()
+        feed = MagicMock()
+        feed.fetch_items = AsyncMock(return_value=[])
+        eng = ConversationEngine(db, feed, None, FakeConfig(has_api_key=False))
+        srv = WebServer(db, eng, max_clients=2)
+
+        async def boom(request):
+            raise RuntimeError("handler exploded")
+
+        srv._app.router.add_get("/boom", boom)
+        client = TestClient(TestServer(srv._app))
+        await client.start_server()
+        try:
+            resp = await client.get("/boom")
+            assert resp.status == 500
+            assert srv.active_requests == 0   # released in finally
+        finally:
+            await client.close()
+            db.close()
+
+    def test_cap_is_configurable_and_floored(self):
+        db = Database(":memory:")
+        db.initialize()
+        eng = ConversationEngine(db, MagicMock(), None, FakeConfig(has_api_key=False))
+        assert WebServer(db, eng, max_clients=7)._max_clients == 7
+        assert WebServer(db, eng, max_clients=0)._max_clients == 1
+        db.close()
+
+    def test_config_rejects_zero_capacity(self, monkeypatch):
+        from config_loader import ConfigError, load_config
+
+        monkeypatch.setenv("MAX_CLIENTS", "0")
+        with pytest.raises(ConfigError):
+            load_config("does-not-exist.env")
+
+
+class TestThreeTierDedup:
+    """Item 3: GUID, then normalized link, then SHA-256(title + date)."""
+
+    @pytest.mark.asyncio
+    async def test_tier1_same_guid_different_link(self, db):
+        first = FeedItem("Headline one.", "http://e.com/a", "s", guid="GUID-1")
+        moved = FeedItem("Rewritten headline.", "http://e.com/moved", "s", guid="GUID-1")
+        assert not await db.is_known_feed_item(first)
+        await db.add_feed_item(first)
+        assert await db.is_known_feed_item(moved), "GUID match must win"
+
+    @pytest.mark.asyncio
+    async def test_tier2_normalized_link_no_guid(self, db):
+        first = FeedItem("A story.", "http://www.e.com/a/", "s")
+        again = FeedItem("A story, updated.", "https://e.com/a?utm_source=news", "s")
+        await db.add_feed_item(first)
+        assert await db.is_known_feed_item(again), "normalized link must match"
+
+    @pytest.mark.asyncio
+    async def test_tier3_title_and_date_hash(self, db):
+        first = FeedItem("Same words.", "http://a.com/one", "s", published="Wed, 20 Aug 2026")
+        syndicated = FeedItem("Same words.", "http://b.com/two", "s", published="Wed, 20 Aug 2026")
+        await db.add_feed_item(first)
+        assert await db.is_known_feed_item(syndicated), "title+date hash must match"
+
+    @pytest.mark.asyncio
+    async def test_genuinely_different_items_are_not_merged(self, db):
+        await db.add_feed_item(
+            FeedItem("First.", "http://e.com/1", "s", guid="G1", published="Mon")
+        )
+        other = FeedItem("Second.", "http://e.com/2", "s", guid="G2", published="Tue")
+        assert not await db.is_known_feed_item(other)
+
+    @pytest.mark.asyncio
+    async def test_same_title_different_date_is_new(self, db):
+        """A recurring column title is a new story each day."""
+        await db.add_feed_item(FeedItem("Market wrap.", "http://e.com/mon", "s", published="Mon"))
+        tue = FeedItem("Market wrap.", "http://e.com/tue", "s", published="Tue")
+        assert not await db.is_known_feed_item(tue)
+
+    @pytest.mark.asyncio
+    async def test_engine_does_not_requeue_a_duplicate(self, db):
+        """A feed that re-serves one story three different ways yields one topic."""
+        feed = ListFeed([FeedItem("Story.", "http://www.e.com/x/", "s", guid="G9")])
+        eng = make_engine(db, CountingLLM(), feed)
+        await eng.refresh_feed()
+        first_version = eng.topic_version
+        feed.items = [FeedItem("Story rewritten.", "https://e.com/x?utm_medium=rss", "s", guid="G9")]
+        await eng.refresh_feed()
+        assert eng.topic_version == first_version, "duplicate must not pre-empt"
+
+    @pytest.mark.asyncio
+    async def test_legacy_rows_still_match_after_migration(self, tmp_path):
+        """Rows written by the old link-only build are backfilled."""
+        import sqlite3
+
+        path = str(tmp_path / "legacy.db")
+        con = sqlite3.connect(path)
+        con.executescript(
+            "CREATE TABLE known_feed_items (link TEXT PRIMARY KEY, title TEXT NOT NULL,"
+            " summary TEXT NOT NULL, first_seen REAL NOT NULL);"
+        )
+        con.execute(
+            "INSERT INTO known_feed_items VALUES ('http://www.e.com/old/','Old','s',1.0)"
+        )
+        con.commit()
+        con.close()
+
+        d = Database(path)
+        d.initialize()
+        try:
+            same = FeedItem("Old", "https://e.com/old?utm_source=x", "s")
+            assert await d.is_known_feed_item(same), "backfilled norm_link must match"
+        finally:
+            d.close()
+
+
+class TestSidebarWithoutJavaScript:
+    """Item 4: the speaker panel must exist in server-rendered HTML."""
+
+    def test_cards_are_in_the_raw_html_not_built_by_script(self):
+        from web_server import build_html_page
+
+        html = build_html_page()
+        body = html[html.index("<body>"):html.index("<script")]
+        for name in (
+            "POTUS",
+            "President of the European Commission",
+            "Gronk Vellumthud",
+            "Yoda",
+        ):
+            assert name in body, f"{name} missing from no-script markup"
+        assert body.count('class="persona-card') == 4
+
+    def test_all_four_descriptions_are_present_without_script(self):
+        from web_server import build_html_page
+        from personas import PERSONAS
+
+        html = build_html_page()
+        body = html[html.index("<body>"):html.index("<script")]
+        for p in PERSONAS.values():
+            assert p.role in body
+            assert p.style in body
+
+    def test_script_no_longer_builds_the_sidebar(self):
+        from web_server import build_html_page
+
+        html = build_html_page()
+        assert "renderSidebar" not in html
+        assert "container.innerHTML" not in html
+
+    def test_avatars_render_and_are_hidden_from_screen_readers(self):
+        from web_server import build_html_page
+        from personas import PERSONAS
+
+        html = build_html_page()
+        for p in PERSONAS.values():
+            assert p.avatar in html
+        assert 'class="avatar" aria-hidden="true"' in html
+
+    def test_persona_text_is_html_escaped(self):
+        """A persona field can never inject markup into the panel."""
+        from web_server import render_persona_cards
+
+        rendered = render_persona_cards([{
+            "key": "x", "avatar": "!", "display_name": "<script>alert(1)</script>",
+            "role": 'role" onmouseover="evil()', "style": "a & b",
+        }])
+        assert "<script>alert(1)</script>" not in rendered
+        assert "&lt;script&gt;" in rendered
+        assert 'onmouseover="evil()' not in rendered
+        assert "a &amp; b" in rendered
+
+
+class TestFeedRetention:
+    """Item 5: the stored feed must not grow without bound."""
+
+    @pytest.mark.asyncio
+    async def test_prune_keeps_only_the_newest(self, db):
+        for i in range(30):
+            await db.add_known_item(f"http://e.com/{i}", f"T{i}", "s")
+        assert await db.count_feed_items() == 30
+        removed = await db.prune_feed_items(keep=10)
+        assert removed == 20
+        assert await db.count_feed_items() == 10
+        survivors = {i.link for i in await db.get_unseen_items(limit=100)}
+        assert "http://e.com/29" in survivors
+        assert "http://e.com/0" not in survivors
+
+    @pytest.mark.asyncio
+    async def test_prune_never_removes_the_active_item(self, db):
+        oldest = "http://e.com/oldest"
+        await db.add_known_item(oldest, "Oldest", "s")
+        for i in range(30):
+            await db.add_known_item(f"http://e.com/{i}", f"T{i}", "s")
+        await db.prune_feed_items(keep=5, protect_link=oldest)
+        remaining = {i.link for i in await db.get_unseen_items(limit=100)}
+        assert oldest in remaining, "the active topic must survive pruning"
+
+    @pytest.mark.asyncio
+    async def test_prune_below_threshold_is_a_no_op(self, db):
+        for i in range(5):
+            await db.add_known_item(f"http://e.com/{i}", f"T{i}", "s")
+        assert await db.prune_feed_items(keep=500) == 0
+        assert await db.count_feed_items() == 5
+
+    @pytest.mark.asyncio
+    async def test_engine_prunes_after_refresh(self, db):
+        for i in range(40):
+            await db.add_known_item(f"http://old.com/{i}", f"Old {i}", "s")
+        feed = ListFeed([FeedItem("Fresh.", "http://e.com/fresh", "s", guid="G")])
+        eng = make_engine(db, CountingLLM(), feed, feed_retention_items=10)
+        await eng.refresh_feed()
+        assert await db.count_feed_items() <= 10
+        active = await db.get_active_topic()
+        assert active.title == "Fresh."
+        # The active item survived even though it is one row among many.
+        assert await db.is_known_feed_item(
+            FeedItem("Fresh.", "http://e.com/fresh", "s", guid="G")
+        )
+
+    def test_config_rejects_a_tiny_retention(self, monkeypatch):
+        from config_loader import ConfigError, load_config
+
+        monkeypatch.setenv("FEED_RETENTION_ITEMS", "3")
+        with pytest.raises(ConfigError):
+            load_config("does-not-exist.env")
+
+
+MANDATED_NOTICE = (
+    "MANDATORY AI PARODY NOTICE: EVERY MESSAGE ON THIS PAGE IS GENERATED BY "
+    "ARTIFICIAL INTELLIGENCE FOR FICTIONAL PARODY AND SOFTWARE DEMONSTRATION. "
+    "NO REAL PERSON PARTICIPATED IN THIS CONVERSATION. NOTHING SHOWN HERE IS A "
+    "REAL STATEMENT, QUOTATION, VIEW, ENDORSEMENT, POLICY, PROMISE, OR OFFICIAL "
+    "POSITION OF ANY PERSON, GOVERNMENT, INSTITUTION, POLITICAL OFFICE, CREATOR, "
+    "OR RIGHTS HOLDER."
+)
+
+
+class TestMandatedDisclaimer:
+    """Item 6: the exact notice the specification requires."""
+
+    def test_exact_text_appears_twice(self):
+        from web_server import build_html_page
+
+        assert build_html_page().count(MANDATED_NOTICE) == 2
+
+    def test_each_copy_is_inside_strong(self):
+        from web_server import build_html_page
+
+        html = build_html_page()
+        assert html.count(f"<strong>{MANDATED_NOTICE}</strong>") == 2
+
+    def test_first_and_last_visible_regions(self):
+        from web_server import build_html_page
+
+        html = build_html_page()
+        body = html[html.index("<body>"):html.index("</body>")]
+        top = body.index('class="disclaimer top"')
+        bottom = body.index('class="disclaimer bottom"')
+        main = body.index('class="main"')
+        assert top < main < bottom, "notices must bracket the app region"
+        # Nothing renderable precedes the top notice or follows the bottom one.
+        assert body[len("<body>"):top].strip(" \n<div") == ""
+
+    def test_outside_the_scrolling_region(self):
+        from web_server import build_html_page
+
+        html = build_html_page()
+        transcript = html.index('id="transcript"')
+        assert html.index('class="disclaimer top"') < transcript
+        assert html.index('class="disclaimer bottom"') > transcript
+
+    def test_accessible_label_present_on_both(self):
+        from web_server import build_html_page
+
+        assert build_html_page().count('aria-label="AI-generated parody warning"') == 2
+
+    def test_present_without_javascript(self):
+        from web_server import build_html_page
+
+        html = build_html_page()
+        assert html.count(MANDATED_NOTICE, 0, html.index("<script")) == 2
+
+    def test_never_truncated_collapsed_or_faded(self):
+        from web_server import build_html_page
+
+        html = build_html_page()
+        css = html[html.index("<style>"):html.index("</style>")]
+        block = css[css.index(".disclaimer {"):css.index(".main {")]
+        assert "text-overflow: ellipsis" not in block
+        assert "display: none" not in block
+        assert "opacity: 1" in block
+        assert "max-height: none" in block
+        assert "white-space: nowrap" not in block
+
+    def test_wraps_on_narrow_screens(self):
+        from web_server import build_html_page
+
+        html = build_html_page()
+        css = html[html.index("<style>"):html.index("</style>")]
+        strong = css[css.index(".disclaimer strong {"):]
+        strong = strong[:strong.index("}")]
+        assert "overflow-wrap: anywhere" in strong
+        assert "white-space: normal" in strong
+
+    def test_no_per_bubble_warning(self):
+        """A bubble carries avatar, speaker name, and message text only."""
+        from web_server import build_html_page
+
+        html = build_html_page()
+        fn = html[html.index("function renderMessage"):]
+        fn = fn[:fn.index("\n}")]
+        # The only children appended to a bubble are the speaker line and body.
+        assert fn.count("div.appendChild") == 2
+        assert "who" in fn and "body" in fn
+        for word in ("parody", "disclaimer", "warning", "notice", "fictional"):
+            assert word not in fn.lower(), f"bubble must not repeat a {word}"
+
+    @pytest.mark.asyncio
+    async def test_served_page_carries_both_copies(self, api):
+        """End to end through the real handler, not just the template."""
+        db, client = api
+        text = await (await client.get("/")).text()
+        assert text.count(MANDATED_NOTICE) == 2

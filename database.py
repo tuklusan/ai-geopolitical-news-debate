@@ -177,6 +177,25 @@ class Database:
                 "ALTER TABLE known_feed_items "
                 "ADD COLUMN last_discussed REAL NOT NULL DEFAULT 0"
             )
+        for column in ("guid", "norm_link", "title_hash"):
+            if column not in item_cols:
+                c.execute(
+                    f"ALTER TABLE known_feed_items ADD COLUMN {column} TEXT NOT NULL DEFAULT ''"
+                )
+        if "norm_link" not in item_cols:
+            # Backfill so rows stored before three-tier dedup still match.
+            from feed import normalize_link
+
+            for row in c.execute("SELECT link FROM known_feed_items").fetchall():
+                c.execute(
+                    "UPDATE known_feed_items SET norm_link = ? WHERE link = ?",
+                    (normalize_link(row["link"]), row["link"]),
+                )
+        c.executescript(
+            "CREATE INDEX IF NOT EXISTS idx_items_guid ON known_feed_items (guid);"
+            "CREATE INDEX IF NOT EXISTS idx_items_norm ON known_feed_items (norm_link);"
+            "CREATE INDEX IF NOT EXISTS idx_items_hash ON known_feed_items (title_hash);"
+        )
         if "discuss_seq" not in item_cols:
             # Ordering counter for "least recently discussed". A timestamp
             # cannot order two items discussed within one clock tick.
@@ -419,11 +438,54 @@ class Database:
         return row is not None
 
     async def add_known_item(self, link: str, title: str, summary: str) -> None:
+        """Store an item known only by its link (kept for direct callers)."""
+        from feed import normalize_link, title_hash
+
         async with self._lock:
             self._conn.execute(
-                "INSERT OR IGNORE INTO known_feed_items (link, title, summary, first_seen) "
-                "VALUES (?, ?, ?, ?)",
-                (link, title, summary, time.time()),
+                "INSERT OR IGNORE INTO known_feed_items "
+                "(link, title, summary, first_seen, guid, norm_link, title_hash) "
+                "VALUES (?, ?, ?, ?, '', ?, ?)",
+                (link, title, summary, time.time(), normalize_link(link), title_hash(title)),
+            )
+            self._conn.commit()
+
+    async def is_known_feed_item(self, item) -> bool:
+        """Three-tier duplicate check: GUID, then normalized link, then hash.
+
+        All three are tested together so an item that gains a GUID, loses a
+        tracking parameter, or is republished at a new URL still matches the
+        row already stored for it.
+        """
+        guid = (getattr(item, "guid", "") or "").strip()
+        norm = item.normalized_link
+        thash = item.title_hash
+        async with self._lock:
+            row = self._conn.execute(
+                "SELECT 1 FROM known_feed_items WHERE "
+                "(? <> '' AND guid = ?) OR "
+                "(? <> '' AND norm_link = ?) OR "
+                "(? <> '' AND title_hash = ?) LIMIT 1",
+                (guid, guid, norm, norm, thash, thash),
+            ).fetchone()
+        return row is not None
+
+    async def add_feed_item(self, item) -> None:
+        """Store a feed item with all three of its identity keys."""
+        async with self._lock:
+            self._conn.execute(
+                "INSERT OR IGNORE INTO known_feed_items "
+                "(link, title, summary, first_seen, guid, norm_link, title_hash) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    item.link,
+                    item.title,
+                    item.summary,
+                    time.time(),
+                    (getattr(item, "guid", "") or "").strip(),
+                    item.normalized_link,
+                    item.title_hash,
+                ),
             )
             self._conn.commit()
 
@@ -456,6 +518,35 @@ class Database:
             "SELECT COALESCE(MAX(discuss_seq), 0) AS s FROM known_feed_items"
         ).fetchone()
         return int(row["s"]) + 1
+
+    async def count_feed_items(self) -> int:
+        async with self._lock:
+            row = self._conn.execute(
+                "SELECT COUNT(*) AS n FROM known_feed_items"
+            ).fetchone()
+        return int(row["n"])
+
+    async def prune_feed_items(self, keep: int, protect_link: str = "") -> int:
+        """Drop all but the newest ``keep`` feed items. Returns rows removed.
+
+        The wall is meant to run for months; without this the table grows
+        for every headline ever seen and the revisit pool fills with stories
+        nobody remembers. The currently active item is never removed, even
+        if it has aged out of the window.
+        """
+        keep = max(1, int(keep))
+        async with self._lock:
+            cur = self._conn.execute(
+                "DELETE FROM known_feed_items WHERE link NOT IN ("
+                "  SELECT link FROM known_feed_items"
+                "  ORDER BY first_seen DESC, rowid DESC LIMIT ?"
+                ") AND link <> ?",
+                (keep, protect_link or ""),
+            )
+            removed = cur.rowcount or 0
+            if removed:
+                self._conn.commit()
+        return removed
 
     async def mark_item_discussed(self, link: str) -> None:
         async with self._lock:

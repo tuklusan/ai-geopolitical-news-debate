@@ -24,6 +24,7 @@ from __future__ import annotations
 import json
 import logging
 import time
+from html import escape
 from typing import Optional
 
 from aiohttp import web
@@ -38,12 +39,47 @@ logger = logging.getLogger("live_news_wall.web")
 DEFAULT_LIMIT = 100
 MAX_LIMIT = 500
 
+# Concurrent-request ceiling and the TCP accept queue behind it.
+DEFAULT_MAX_CLIENTS = 1024
+LISTEN_BACKLOG = 128
+# Sent with a 503 so a shedding client waits instead of retrying instantly.
+RETRY_AFTER_SECONDS = 5
+
+
+def render_persona_cards(persona_info) -> str:
+    """Render the speaker panel as static HTML.
+
+    Server-rendered rather than built by script, so the panel explaining
+    that every speaker is fictional is present for a reader with
+    JavaScript disabled, for a text browser, and for a crawler.
+    """
+    cards = []
+    for p in persona_info:
+        cards.append(
+            '<div class="persona-card {key}">'
+            '<div class="name"><span class="avatar" aria-hidden="true">{avatar}</span>{name}</div>'
+            '<div class="role">{role}</div>'
+            '<div class="style">{style}</div>'
+            "</div>".format(
+                key=escape(p["key"], quote=True),
+                avatar=escape(p["avatar"]),
+                name=escape(p["display_name"]),
+                role=escape(p["role"]),
+                style=escape(p["style"]),
+            )
+        )
+    return "\n      ".join(cards)
+
 
 def build_html_page() -> str:
     """Return the full embedded HTML/CSS/JS page string."""
     persona_info = persona_mod.persona_public_info()
     persona_json = json.dumps(persona_info, ensure_ascii=False)
-    return HTML_PAGE.replace("__PERSONA_JSON__", persona_json)
+    return (
+        HTML_PAGE
+        .replace("__PERSONA_CARDS__", render_persona_cards(persona_info))
+        .replace("__PERSONA_JSON__", persona_json)
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -57,8 +93,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
 <title>Live News Debate Wall — AI Parody</title>
 <style>
   :root {
-    --top-h: 44px;
-    --bot-h: 40px;
+    color-scheme: dark;
     --bg: #0d1117;
     --panel: #161b22;
     --panel2: #1c2330;
@@ -87,22 +122,35 @@ HTML_PAGE = r"""<!DOCTYPE html>
     min-height: 100dvh; height: 100dvh;
   }
 
-  /* Disclaimer bars - permanent top & bottom */
+  /* Mandatory parody notice. Pinned top and bottom, never scrolled away,
+     never collapsed, faded, abbreviated, or truncated. Height is content
+     driven so the full text always wraps into view on any width. */
   .disclaimer {
-    background: #5a1a1a;
-    color: #ffd6d6;
-    font-size: 13px;
-    font-weight: 600;
+    background: #4a1111;
+    color: #ffe9e9;
+    border: 2px solid #ff7b72;
+    font-size: 12px;
+    font-weight: 700;
     text-align: center;
-    padding: 0 12px;
-    display: flex; align-items: center; justify-content: center;
+    padding: 7px 12px;
     flex-shrink: 0;
     z-index: 100;
-    line-height: 1.3;
+    line-height: 1.35;
+    max-height: none;
+    overflow: visible;
+    opacity: 1;
   }
-  .disclaimer.top { height: var(--top-h); position: static; }
-  .disclaimer.bottom { height: var(--bot-h); position: static; }
-  .disclaimer strong { text-transform: uppercase; letter-spacing: 0.5px; }
+  .disclaimer.top { border-width: 0 0 2px 0; }
+  .disclaimer.bottom { border-width: 2px 0 0 0; }
+  .disclaimer strong {
+    display: block;
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+    overflow-wrap: anywhere;
+    word-break: normal;
+    white-space: normal;
+    text-overflow: clip;
+  }
 
   .main {
     flex: 1;
@@ -138,6 +186,12 @@ HTML_PAGE = r"""<!DOCTYPE html>
   }
   .topic-bar .label { color: var(--muted); font-weight: 600; }
   .topic-bar .title { color: var(--accent); }
+  /* Subtle "still trying" hint shown only while polling is backing off. */
+  .topic-bar .retrying {
+    color: #d29922; font-size: 12px; margin-left: 8px; white-space: nowrap;
+  }
+  .topic-bar .retrying::before { content: "\25CF"; margin-right: 4px; }
+  .topic-bar .retrying[hidden] { display: none; }
 
   .transcript {
     flex: 1;
@@ -200,6 +254,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
     margin-bottom: 10px;
   }
   .persona-card .name { font-weight: 700; font-size: 14px; }
+  .avatar { margin-right: 6px; font-style: normal; }
   .persona-card .role { font-size: 12px; color: var(--muted); margin: 3px 0; }
   .persona-card .style { font-size: 12px; color: var(--text); margin-top: 6px; }
   .persona-card.potus { border-left: 3px solid var(--potus); }
@@ -233,7 +288,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
       order: -1; /* persona info above transcript */
     }
     .transcript-wrap { padding: 6px; }
-    .disclaimer { font-size: 11px; padding: 0 6px; }
+    .disclaimer { font-size: 11px; padding: 6px 8px; }
     .jump-btn { bottom: 12px; right: 12px; padding: 7px 14px; }
   }
 
@@ -246,14 +301,15 @@ HTML_PAGE = r"""<!DOCTYPE html>
 </head>
 <body>
 
-<div class="disclaimer top">
-  <strong>AI Parody — Fictional Satire.</strong>&nbsp; All personas are fictional AI-generated parodies. Not real statements by real officials.
+<div class="disclaimer top" role="note" aria-label="AI-generated parody warning">
+  <strong>MANDATORY AI PARODY NOTICE: EVERY MESSAGE ON THIS PAGE IS GENERATED BY ARTIFICIAL INTELLIGENCE FOR FICTIONAL PARODY AND SOFTWARE DEMONSTRATION. NO REAL PERSON PARTICIPATED IN THIS CONVERSATION. NOTHING SHOWN HERE IS A REAL STATEMENT, QUOTATION, VIEW, ENDORSEMENT, POLICY, PROMISE, OR OFFICIAL POSITION OF ANY PERSON, GOVERNMENT, INSTITUTION, POLITICAL OFFICE, CREATOR, OR RIGHTS HOLDER.</strong>
 </div>
 
 <div class="main">
   <div class="transcript-wrap">
     <div class="topic-bar">
-      <span class="label">Current Headline: </span><span class="title" id="topic">Loading…</span>
+      <span class="label">Current Headline: </span><span class="title" id="topic">Loading…</span><span
+        class="retrying" id="retryIndicator" role="status" aria-live="polite" hidden>Reconnecting…</span>
     </div>
     <div class="transcript" id="transcript" role="log" aria-live="polite" aria-label="Live debate transcript"></div>
     <button class="jump-btn" id="jumpBtn" type="button" aria-label="Jump to latest message">Jump to latest ↓</button>
@@ -261,7 +317,9 @@ HTML_PAGE = r"""<!DOCTYPE html>
 
   <aside class="sidebar" id="sidebar">
     <h2>Debate Panel</h2>
-    <div id="personaCards"></div>
+    <div id="personaCards">
+      __PERSONA_CARDS__
+    </div>
     <div class="health" id="health">Health: …</div>
     <p class="attribution">
       Live News Debate Wall — based on original work by Supratim Sanyal of
@@ -272,8 +330,8 @@ HTML_PAGE = r"""<!DOCTYPE html>
   </aside>
 </div>
 
-<div class="disclaimer bottom">
-  <strong>AI Parody — Fictional Satire.</strong>&nbsp; No persona represents a real person. For entertainment only.
+<div class="disclaimer bottom" role="note" aria-label="AI-generated parody warning">
+  <strong>MANDATORY AI PARODY NOTICE: EVERY MESSAGE ON THIS PAGE IS GENERATED BY ARTIFICIAL INTELLIGENCE FOR FICTIONAL PARODY AND SOFTWARE DEMONSTRATION. NO REAL PERSON PARTICIPATED IN THIS CONVERSATION. NOTHING SHOWN HERE IS A REAL STATEMENT, QUOTATION, VIEW, ENDORSEMENT, POLICY, PROMISE, OR OFFICIAL POSITION OF ANY PERSON, GOVERNMENT, INSTITUTION, POLITICAL OFFICE, CREATOR, OR RIGHTS HOLDER.</strong>
 </div>
 
 <script>
@@ -290,33 +348,17 @@ var lastSeenId = 0;
 var renderedIds = {};
 var isFollowing = true;       // viewer is at/near bottom
 var unseenCount = 0;          // messages added while not following
-var pollIntervalMs = 2000;
+var basePollMs = 2000;        // normal cadence
+var MAX_BACKOFF_MS = 30000;   // ceiling while the server is unreachable
+var currentDelayMs = basePollMs;
+var pollTimer = null;
+var retryEl = document.getElementById('retryIndicator');
 /* The wall is designed to stay open for days. Without a cap the transcript
    grows without bound and the tab's memory grows with it. */
 var MAX_RENDERED = 500;
 
-/* ---------- Persona sidebar ---------- */
-function renderSidebar() {
-  var container = document.getElementById('personaCards');
-  container.innerHTML = '';
-  PERSONAS.forEach(function(p) {
-    var card = document.createElement('div');
-    card.className = 'persona-card ' + p.key;
-    var name = document.createElement('div');
-    name.className = 'name';
-    name.textContent = p.display_name;
-    var role = document.createElement('div');
-    role.className = 'role';
-    role.textContent = p.role;
-    var style = document.createElement('div');
-    style.className = 'style';
-    style.textContent = p.style;
-    card.appendChild(name);
-    card.appendChild(role);
-    card.appendChild(style);
-    container.appendChild(card);
-  });
-}
+/* The speaker panel is server-rendered and static; script only needs the
+   persona data to label incoming messages. */
 /* ---------- Message rendering ---------- */
 function renderMessage(msg) {
   var div = document.createElement('div');
@@ -326,10 +368,22 @@ function renderMessage(msg) {
   var who = document.createElement('div');
   who.className = 'who';
   var display = msg.speaker;
+  var avatar = '';
   for (var i = 0; i < PERSONAS.length; i++) {
-    if (PERSONAS[i].key === msg.speaker) { display = PERSONAS[i].display_name; break; }
+    if (PERSONAS[i].key === msg.speaker) {
+      display = PERSONAS[i].display_name;
+      avatar = PERSONAS[i].avatar || '';
+      break;
+    }
   }
-  who.textContent = display;
+  if (avatar) {
+    var badge = document.createElement('span');
+    badge.className = 'avatar';
+    badge.setAttribute('aria-hidden', 'true');
+    badge.textContent = avatar;
+    who.appendChild(badge);
+  }
+  who.appendChild(document.createTextNode(display));
 
   var body = document.createElement('div');
   body.className = 'body';
@@ -434,26 +488,64 @@ function updateHealth(health) {
   healthEl.innerHTML = 'Health — ' + parts.join(' | ');
 }
 
+/* Exponential backoff so a restarting server is not hammered, and the
+   viewer is told the wall is still trying rather than silently frozen. */
+function backoffDelay(currentMs) {
+  return Math.min(currentMs * 2, MAX_BACKOFF_MS);
+}
+
+/* Honour a server-supplied Retry-After (seconds, or an HTTP date). */
+function retryAfterMs(resp) {
+  var header = resp.headers ? resp.headers.get('Retry-After') : null;
+  if (!header) return 0;
+  var seconds = parseInt(header, 10);
+  if (!isNaN(seconds) && String(seconds) === header.trim()) {
+    return Math.min(Math.max(seconds, 1) * 1000, MAX_BACKOFF_MS);
+  }
+  var when = Date.parse(header);
+  if (isNaN(when)) return 0;
+  return Math.min(Math.max(when - Date.now(), 1000), MAX_BACKOFF_MS);
+}
+
+function showRetrying(on) {
+  if (!retryEl) return;
+  if (on) { retryEl.removeAttribute('hidden'); }
+  else { retryEl.setAttribute('hidden', ''); }
+}
+
 async function poll() {
+  var nextDelay;
   try {
     var resp = await fetch('/api/messages?since=' + lastSeenId);
-    if (!resp.ok) return;
+    if (!resp.ok) {
+      // 503 from the client-capacity limiter carries Retry-After.
+      nextDelay = retryAfterMs(resp) || backoffDelay(currentDelayMs);
+      currentDelayMs = nextDelay;
+      showRetrying(true);
+      return;
+    }
     var data = await resp.json();
     if (data.messages) applyMessages(data.messages);
     if (data.topic) updateTopic(data.topic);
     if (data.health) updateHealth(data.health);
+    // Recovered: resume the normal cadence.
+    currentDelayMs = basePollMs;
+    showRetrying(false);
   } catch (e) {
-    // network blip; try again next interval
+    currentDelayMs = backoffDelay(currentDelayMs);
+    showRetrying(true);
+  } finally {
+    // Self-scheduling: a fixed setInterval would stack overlapping
+    // requests against a server that has stopped responding.
+    pollTimer = setTimeout(poll, currentDelayMs);
   }
 }
 
 /* ---------- Init ---------- */
-renderSidebar();
 // Start following state: scroll to bottom immediately.
 isFollowing = true;
 scrollToBottom();
 poll();
-setInterval(poll, pollIntervalMs);
 </script>
 </body>
 </html>
@@ -463,12 +555,51 @@ setInterval(poll, pollIntervalMs);
 class WebServer:
     """aiohttp application server."""
 
-    def __init__(self, db: Database, engine: ConversationEngine):
+    def __init__(
+        self,
+        db: Database,
+        engine: ConversationEngine,
+        max_clients: int = DEFAULT_MAX_CLIENTS,
+        backlog: int = LISTEN_BACKLOG,
+    ):
         self._db = db
         self._engine = engine
-        self._app = web.Application()
+        self._max_clients = max(1, int(max_clients))
+        self._backlog = max(1, int(backlog))
+        # Requests currently being served. Counted rather than queued: an
+        # unbounded wait queue would defer the overload instead of shedding
+        # it, and the client polls again a moment later anyway.
+        self._active = 0
+        self._app = web.Application(middlewares=[self._capacity_middleware])
         self._runner: Optional[web.AppRunner] = None
         self._setup_routes()
+
+    @property
+    def active_requests(self) -> int:
+        return self._active
+
+    @web.middleware
+    async def _capacity_middleware(self, request: web.Request, handler):
+        """Shed load past ``max_clients`` concurrent requests."""
+        if self._active >= self._max_clients:
+            logger.warning(
+                "At client capacity (%d); shedding %s %s",
+                self._max_clients,
+                request.method,
+                request.path,
+            )
+            return self._json(
+                {"error": "busy", "detail": "server at client capacity"},
+                status=503,
+                extra_headers={"Retry-After": str(RETRY_AFTER_SECONDS)},
+            )
+        # No await between the check and the increment, so the count cannot
+        # be overshot by another task slipping in.
+        self._active += 1
+        try:
+            return await handler(request)
+        finally:
+            self._active -= 1
 
     def _setup_routes(self) -> None:
         self._app.router.add_get("/", self._index)
@@ -528,11 +659,12 @@ class WebServer:
         return self._json(h, status=status)
 
     @staticmethod
-    def _json(payload: dict, status: int = 200) -> web.Response:
+    def _json(payload: dict, status: int = 200, extra_headers: Optional[dict] = None) -> web.Response:
         """Return a JSON response that is never cached by the browser."""
-        return web.json_response(
-            payload, status=status, headers={"Cache-Control": "no-store"}
-        )
+        headers = {"Cache-Control": "no-store"}
+        if extra_headers:
+            headers.update(extra_headers)
+        return web.json_response(payload, status=status, headers=headers)
 
     @classmethod
     def _bad_request(cls, detail: str) -> web.Response:
@@ -542,9 +674,12 @@ class WebServer:
     async def start(self, host: str, port: int) -> None:
         self._runner = web.AppRunner(self._app)
         await self._runner.setup()
-        site = web.TCPSite(self._runner, host, port)
+        site = web.TCPSite(self._runner, host, port, backlog=self._backlog)
         await site.start()
-        logger.info("Server running on http://%s:%s", host, port)
+        logger.info(
+            "Server running on http://%s:%s (max_clients=%d, backlog=%d)",
+            host, port, self._max_clients, self._backlog,
+        )
 
     async def stop(self) -> None:
         if self._runner is not None:

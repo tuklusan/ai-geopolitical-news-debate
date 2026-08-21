@@ -16,6 +16,7 @@
 Integration tests: HTTP server endpoints, SQLite persistence, and rendered
 HTML fixture inspection. No real RSS feed or real model API required.
 """
+import asyncio
 import os
 import sys
 from unittest.mock import AsyncMock, MagicMock
@@ -267,11 +268,19 @@ class TestStartupFailureCleanup:
         app._llm = None
         app._engine = ConversationEngine(app._db, app._feed, None, app._cfg)
 
-        # Use a real WebServer but with a port that will fail to bind.
-        app._web = WebServer(app._db, app._engine)
+        # Make the bind failure deterministic. Relying on a low port number
+        # being privileged is not portable: Windows binds port 1 happily, and
+        # app.run() would then block on its shutdown event forever instead of
+        # raising, hanging the whole suite rather than failing.
+        class FailingWebServer(WebServer):
+            async def start(self, host, port):
+                raise OSError(98, "address already in use")
 
-        with pytest.raises(Exception):
-            await app.run()
+        app._web = FailingWebServer(app._db, app._engine)
+
+        with pytest.raises(OSError):
+            # Bounded so a regression that stops raising fails fast.
+            await asyncio.wait_for(app.run(), timeout=10)
 
         # The engine's HTTP session must have been closed.
         assert app._engine._http_session is None or app._engine._http_session.closed

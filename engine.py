@@ -54,6 +54,9 @@ NO_REVISIT_RECENT = 3
 # Pause before retrying when a turn produced nothing.
 IDLE_SLEEP_SECONDS = 2.0
 
+# Stored feed items retained when the config does not say.
+DEFAULT_FEED_RETENTION = 500
+
 # Validation reasons that indicate the provider itself failed, as opposed to
 # the model returning something that was merely rejected.
 PROVIDER_FAILURE_REASONS = frozenset(
@@ -208,8 +211,9 @@ class ConversationEngine:
 
         new_items: List[FeedItem] = []
         for it in items:
-            if not await self._db.is_known_item(it.link):
-                await self._db.add_known_item(it.link, it.title, it.summary)
+            # Three-tier identity: GUID, normalized link, title+date hash.
+            if not await self._db.is_known_feed_item(it):
+                await self._db.add_feed_item(it)
                 new_items.append(it)
 
         async with self._topic_lock:
@@ -227,6 +231,18 @@ class ConversationEngine:
                 await self._advance_topic()
             else:
                 logger.debug("RSS refresh: no new items; topic unchanged.")
+        await self._prune_feed_items()
+
+    async def _prune_feed_items(self) -> None:
+        """Keep the stored feed bounded so it cannot grow without limit."""
+        keep = int(_cfg_num(self._cfg, "feed_retention_items", DEFAULT_FEED_RETENTION, int))
+        try:
+            removed = await self._db.prune_feed_items(keep, self._active_topic_link or "")
+        except Exception as exc:  # noqa: BLE001 - pruning is housekeeping
+            logger.warning("Could not prune stored feed items: %s", exc)
+            return
+        if removed:
+            logger.info("Pruned %d stored feed item(s), keeping the newest %d.", removed, keep)
 
     async def _advance_topic(self) -> bool:
         """Move to the next queued item, or revisit the stalest stored one."""

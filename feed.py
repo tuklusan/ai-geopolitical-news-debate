@@ -22,10 +22,12 @@ failure so the app continues in a degraded state.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import re
 from dataclasses import dataclass
 from typing import List, Optional
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import aiohttp
 
@@ -44,6 +46,55 @@ class FeedItem:
     title: str
     link: str
     summary: str
+    guid: str = ""
+    published: str = ""
+
+    @property
+    def normalized_link(self) -> str:
+        return normalize_link(self.link)
+
+    @property
+    def title_hash(self) -> str:
+        return title_hash(self.title, self.published)
+
+
+# Query parameters that identify a campaign, not a document.
+_TRACKING_PREFIXES = ("utm_", "fbclid", "gclid", "mc_cid", "mc_eid", "igshid")
+
+
+def normalize_link(url: str) -> str:
+    """Return a canonical form of ``url`` for duplicate detection.
+
+    The same story is often served as http/https, with or without www, with
+    a trailing slash, and with campaign parameters appended. Those are the
+    same document and must not start a second discussion.
+    """
+    if not url:
+        return ""
+    parts = urlsplit(url.strip())
+    if not parts.netloc:  # relative or malformed: compare verbatim
+        return url.strip().rstrip("/").lower()
+    host = (parts.hostname or "").lower()
+    if host.startswith("www."):
+        host = host[4:]
+    if parts.port:
+        host = f"{host}:{parts.port}"
+    path = re.sub(r"/+$", "", parts.path) or "/"
+    kept = [
+        (k, v)
+        for k, v in parse_qsl(parts.query, keep_blank_values=True)
+        if not k.lower().startswith(_TRACKING_PREFIXES)
+    ]
+    # Sorted so parameter order cannot make one story look like two.
+    return urlunsplit(("https", host, path, urlencode(sorted(kept)), ""))
+
+
+def title_hash(title: str, published: str = "") -> str:
+    """Last-resort identity: SHA-256 of the normalized title plus date."""
+    basis = " ".join((title or "").split()).lower() + "|" + (published or "").strip()
+    if not basis.strip("|"):
+        return ""
+    return hashlib.sha256(basis.encode("utf-8")).hexdigest()
 
 
 # Punctuation that must not be preceded by a space once tags are removed.
@@ -96,11 +147,23 @@ def parse_rss(xml_text: str) -> List[FeedItem]:
         for it in items:
             title_el = it.find("title")
             desc_el = it.find("description")
+            guid_el = it.find("guid")
+            date_el = it.find("pubDate") or it.find("pubdate") or it.find("date")
             title = _strip_html(title_el.get_text() if title_el else "")
             link = _extract_link(it)
             summary = _strip_html(desc_el.get_text() if desc_el else "")
+            guid = (guid_el.get_text() or "").strip() if guid_el else ""
+            published = (date_el.get_text() or "").strip() if date_el else ""
             if title and link:
-                result.append(FeedItem(title=title, link=link, summary=summary))
+                result.append(
+                    FeedItem(
+                        title=title,
+                        link=link,
+                        summary=summary,
+                        guid=guid,
+                        published=published,
+                    )
+                )
         return result
     # Fallback regex parser (used only if bs4/lxml unavailable).
     items = []
@@ -109,12 +172,16 @@ def parse_rss(xml_text: str) -> List[FeedItem]:
         title_m = re.search(r"<title>(.*?)</title>", block, re.DOTALL)
         link_m = re.search(r"<link>(.*?)</link>", block, re.DOTALL)
         desc_m = re.search(r"<description>(.*?)</description>", block, re.DOTALL)
+        guid_m = re.search(r"<guid[^>]*>(.*?)</guid>", block, re.DOTALL)
+        date_m = re.search(r"<pubDate>(.*?)</pubDate>", block, re.DOTALL | re.IGNORECASE)
         if title_m and link_m:
             items.append(
                 FeedItem(
                     title=_strip_html(title_m.group(1)),
                     link=link_m.group(1).strip(),
                     summary=_strip_html(desc_m.group(1) if desc_m else ""),
+                    guid=(guid_m.group(1).strip() if guid_m else ""),
+                    published=(date_m.group(1).strip() if date_m else ""),
                 )
             )
     return items
