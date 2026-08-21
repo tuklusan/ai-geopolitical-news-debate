@@ -178,18 +178,24 @@ def validate_output(text: str, persona: Persona) -> ValidationResult:
 
 
 def repair_instruction(persona: Persona, failed_reason: str) -> str:
-    """Return a stricter repair instruction for a failed generation."""
+    """Return a stricter repair instruction for a failed generation.
+
+    The rejection reason is quoted back: a model told only that it failed
+    is far more likely to repeat the same mistake on its single retry.
+    """
+    because = f" (reason: {failed_reason})" if failed_reason else ""
     if persona.is_gronk:
         return (
-            "Your previous response was rejected. Reply again with EXACTLY "
-            "three short lines of Vogon bureaucratic poetry, maximum 12 "
-            "words per line, no headings, no labels, no JSON, no code fences, "
-            "no persona name. Output only the three poetry lines."
+            f"Your previous response was rejected{because}. Reply again with "
+            "EXACTLY three short lines of Vogon bureaucratic poetry, maximum "
+            "12 words per line, no headings, no labels, no JSON, no code "
+            "fences, no persona name. Output only the three poetry lines."
         )
     return (
-        "Your previous response was rejected. Reply again with a single "
-        f"short complete plain-text sentence or two (maximum {persona.max_words} "
-        "words) that ends with proper terminal punctuation. No JSON, no YAML, "
-        "no XML, no dictionaries, no code fences, no field names, no persona "
-        "name prefix, no analysis, no metadata. Output only the spoken words."
+        f"Your previous response was rejected{because}. Reply again with a "
+        f"single short complete plain-text sentence or two (maximum "
+        f"{persona.max_words} words) that ends with proper terminal "
+        "punctuation. No JSON, no YAML, no XML, no dictionaries, no code "
+        "fences, no field names, no persona name prefix, no analysis, no "
+        "metadata. Output only the spoken words."
     )

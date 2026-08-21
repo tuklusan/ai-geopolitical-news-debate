@@ -555,3 +555,20 @@ class TestFeedParsing:
         from feed import parse_rss
 
         assert isinstance(parse_rss("<rss><channel><item><title>x"), list)
+
+
+class TestRepairInstructionUsesReason:
+    def test_reason_is_quoted_back(self):
+        from validator import repair_instruction
+        from personas import PERSONAS
+
+        msg = repair_instruction(PERSONAS["potus"], "ends mid-sentence")
+        assert "ends mid-sentence" in msg
+
+    def test_missing_reason_is_tolerated(self):
+        from validator import repair_instruction
+        from personas import PERSONAS
+
+        msg = repair_instruction(PERSONAS["gronk"], "")
+        assert "reason:" not in msg
+        assert "three" in msg.lower()
