@@ -69,7 +69,12 @@ class Database:
     # lifecycle
     # ------------------------------------------------------------------
     def initialize(self) -> None:
-        """Open the connection and create tables / sequences."""
+        """Open the connection and create tables / sequences.
+
+        Calling this twice must not strand the previous connection, which
+        would leak the handle and, for a file database, its WAL lock.
+        """
+        self.close()
         self._conn = sqlite3.connect(self._db_path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA journal_mode=WAL")
@@ -158,9 +163,25 @@ class Database:
                 "ALTER TABLE known_feed_items "
                 "ADD COLUMN last_discussed REAL NOT NULL DEFAULT 0"
             )
+        if "discuss_seq" not in item_cols:
+            # Ordering counter for "least recently discussed". A timestamp
+            # cannot order two items discussed within one clock tick.
+            c.execute(
+                "ALTER TABLE known_feed_items "
+                "ADD COLUMN discuss_seq INTEGER NOT NULL DEFAULT 0"
+            )
         topic_cols = self._columns("topics")
         if "turns" not in topic_cols:
             c.execute("ALTER TABLE topics ADD COLUMN turns INTEGER NOT NULL DEFAULT 0")
+        if "activation_seq" not in topic_cols:
+            # Recency of activation, which differs from creation order once a
+            # topic can be revisited and reused. A counter rather than a
+            # timestamp: the system clock granularity (~16ms on Windows) is
+            # coarser than consecutive activations, which would tie.
+            c.execute(
+                "ALTER TABLE topics ADD COLUMN activation_seq INTEGER NOT NULL DEFAULT 0"
+            )
+            c.execute("UPDATE topics SET activation_seq = id")
         c.execute(
             "INSERT INTO app_state (key, value) VALUES ('schema_version', ?) "
             "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
@@ -275,14 +296,21 @@ class Database:
     # ------------------------------------------------------------------
     # topics
     # ------------------------------------------------------------------
+    def _next_activation_seq_locked(self) -> int:
+        row = self._conn.execute(
+            "SELECT COALESCE(MAX(activation_seq), 0) AS s FROM topics"
+        ).fetchone()
+        return int(row["s"]) + 1
+
     async def add_topic(self, title: str, link: str, summary: str) -> int:
         ts = time.time()
         async with self._lock:
+            seq = self._next_activation_seq_locked()
             self._conn.execute("UPDATE topics SET active = 0")
             cur = self._conn.execute(
-                "INSERT INTO topics (title, link, summary, created_at, active, turns) "
-                "VALUES (?, ?, ?, ?, 1, 0)",
-                (title, link, summary, ts),
+                "INSERT INTO topics (title, link, summary, created_at, active, turns, activation_seq) "
+                "VALUES (?, ?, ?, ?, 1, 0, ?)",
+                (title, link, summary, ts, seq),
             )
             self._conn.commit()
             return int(cur.lastrowid)
@@ -299,18 +327,20 @@ class Database:
                 "SELECT id FROM topics WHERE link = ? ORDER BY id DESC LIMIT 1",
                 (link,),
             ).fetchone()
+            seq = self._next_activation_seq_locked()
             self._conn.execute("UPDATE topics SET active = 0")
             if row:
                 topic_id = int(row["id"])
                 self._conn.execute(
-                    "UPDATE topics SET active = 1, title = ?, summary = ? WHERE id = ?",
-                    (title, summary, topic_id),
+                    "UPDATE topics SET active = 1, title = ?, summary = ?, activation_seq = ? "
+                    "WHERE id = ?",
+                    (title, summary, seq, topic_id),
                 )
             else:
                 cur = self._conn.execute(
-                    "INSERT INTO topics (title, link, summary, created_at, active, turns) "
-                    "VALUES (?, ?, ?, ?, 1, 0)",
-                    (title, link, summary, ts),
+                    "INSERT INTO topics (title, link, summary, created_at, active, turns, activation_seq) "
+                    "VALUES (?, ?, ?, ?, 1, 0, ?)",
+                    (title, link, summary, ts, seq),
                 )
                 topic_id = int(cur.lastrowid)
             self._conn.commit()
@@ -352,10 +382,15 @@ class Database:
             self._conn.commit()
 
     async def get_recent_topic_links(self, n: int = 3) -> List[str]:
-        """Return the links of the ``n`` most recently activated topics."""
+        """Return the links of the ``n`` most recently activated topics.
+
+        Ordered by activation sequence, not by id: a revisited headline
+        reuses its original row, so creation order no longer tracks recency.
+        """
         async with self._lock:
             rows = self._conn.execute(
-                "SELECT link FROM topics ORDER BY id DESC LIMIT ?", (n,)
+                "SELECT link FROM topics ORDER BY activation_seq DESC, id DESC LIMIT ?",
+                (n,),
             ).fetchall()
         return [r["link"] for r in rows]
 
@@ -394,7 +429,7 @@ class Database:
         async with self._lock:
             rows = self._conn.execute(
                 "SELECT link, title, summary FROM known_feed_items "
-                "WHERE times_discussed > 0 ORDER BY last_discussed ASC, rowid ASC"
+                "WHERE times_discussed > 0 ORDER BY discuss_seq ASC, rowid ASC"
             ).fetchall()
         excluded = set(exclude_links)
         for r in rows:
@@ -402,13 +437,20 @@ class Database:
                 return QueuedItem(r["link"], r["title"], r["summary"])
         return None
 
+    def _next_discuss_seq_locked(self) -> int:
+        row = self._conn.execute(
+            "SELECT COALESCE(MAX(discuss_seq), 0) AS s FROM known_feed_items"
+        ).fetchone()
+        return int(row["s"]) + 1
+
     async def mark_item_discussed(self, link: str) -> None:
         async with self._lock:
+            seq = self._next_discuss_seq_locked()
             self._conn.execute(
                 "UPDATE known_feed_items "
-                "SET times_discussed = times_discussed + 1, last_discussed = ? "
-                "WHERE link = ?",
-                (time.time(), link),
+                "SET times_discussed = times_discussed + 1, last_discussed = ?, "
+                "discuss_seq = ? WHERE link = ?",
+                (time.time(), seq, link),
             )
             self._conn.commit()
 

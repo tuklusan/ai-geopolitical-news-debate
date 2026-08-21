@@ -4,10 +4,9 @@ currency checks, and malformed-output never-stored behavior.
 
 Uses a fake LLM client so no real model API is required.
 """
-import asyncio
 import os
 import sys
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 
 import pytest
 import pytest_asyncio
@@ -182,7 +181,6 @@ class TestTopicManagement:
             assert first_topic.title == "Same Headline."
             # Refresh again with same feed — should NOT create a new topic.
             await eng.refresh_feed()
-            topics = await db.get_messages()
             # The active topic should still be the same one.
             active = await db.get_active_topic()
             assert active.title == "Same Headline."
@@ -225,13 +223,13 @@ class TestTopicManagement:
             assert eng._recent_lines == []
         finally:
             await eng._http_session.close()
+            eng._http_session = None
+
+    @pytest.mark.asyncio
     async def test_obsolete_topic_discarded(self, db):
         llm = FakeLLM([fixtures.VALID_POTUS])
         eng = make_engine(db, llm)
         await db.add_topic("Old topic.", "http://old", "summary")
-        topic = await db.get_active_topic()
-        llm = FakeLLM([fixtures.VALID_POTUS])
-        topic = await db.get_active_topic()
         # Simulate topic change before storing.
         eng._active_topic_id = 999
         eng._active_topic_title = "New topic."

@@ -43,14 +43,14 @@ logger = logging.getLogger("live_news_wall")
 def detected_lan_urls(port: int) -> List[str]:
     """Return http URLs for every detected non-loopback IPv4 address."""
     urls: List[str] = []
+    seen: set = set()
     try:
         for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
             address = info[4][0]
-            if address.startswith("127.") or address in urls:
+            if address.startswith("127.") or address in seen:
                 continue
-            url = f"http://{address}:{port}/"
-            if url not in urls:
-                urls.append(url)
+            seen.add(address)
+            urls.append(f"http://{address}:{port}/")
     except OSError as exc:
         logger.debug("Could not enumerate LAN addresses: %s", exc)
     return urls
@@ -79,7 +79,14 @@ class Application:
     async def run(self) -> None:
         """Initialize, start engine + server, and run until shutdown."""
         self._db.initialize()
-        await self._engine.start()
+        try:
+            await self._engine.start()
+        except Exception:
+            # start() may fail after opening its aiohttp session; close it
+            # rather than leaking the connector.
+            await self._engine.stop()
+            self._db.close()
+            raise
         try:
             await self._web.start(self._cfg.host, self._cfg.port)
         except Exception:

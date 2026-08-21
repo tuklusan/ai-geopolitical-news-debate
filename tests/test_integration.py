@@ -2,15 +2,12 @@
 Integration tests: HTTP server endpoints, SQLite persistence, and rendered
 HTML fixture inspection. No real RSS feed or real model API required.
 """
-import asyncio
-import json
 import os
 import sys
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 import pytest_asyncio
-from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))

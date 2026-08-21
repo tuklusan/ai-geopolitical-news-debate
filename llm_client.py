@@ -151,7 +151,7 @@ class LLMClient:
                         "LLM HTTP %s%s: %s",
                         resp.status,
                         f" (Retry-After: {retry_after})" if retry_after else "",
-                        body[:200],
+                        self._redact(body)[:200],
                     )
                     return None
                 data = await resp.json()
@@ -159,11 +159,20 @@ class LLMClient:
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001 - degrade gracefully
-            logger.warning("LLM generate failed: %s", exc)
+            logger.warning("LLM generate failed: %s", self._redact(str(exc)))
             return None
         finally:
             if own_session and session is not None:
                 await session.close()
+
+    def _redact(self, text: str) -> str:
+        """Remove the API key from anything that is about to be logged.
+
+        Some providers echo the presented credential back in an error body.
+        """
+        if not text or not self._api_key:
+            return text
+        return text.replace(self._api_key, "[REDACTED]")
 
 
 def _extract_text(data: dict) -> Optional[str]:

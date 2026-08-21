@@ -11,8 +11,8 @@ These cover the defects found after the first release:
 import asyncio
 import os
 import sys
-from dataclasses import dataclass, field
-from typing import List, Optional
+from dataclasses import dataclass
+from typing import List
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -22,11 +22,10 @@ from aiohttp.test_utils import TestClient, TestServer
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from database import Database
-from engine import ConversationEngine, SPEAKER_WINDOW
+from engine import ConversationEngine
 from feed import FeedItem
-from personas import PERSONAS, persona_keys
+from personas import persona_keys
 from web_server import WebServer
-from tests import fixtures
 
 
 @dataclass
@@ -404,3 +403,155 @@ class TestMessageApi:
         text = await (await client.get("/api/messages")).text()
         assert "api_key" not in text.lower()
         assert "bearer" not in text.lower()
+
+
+class TestHardening:
+    """Regressions found during line-by-line review."""
+
+    @pytest.mark.asyncio
+    async def test_initialize_twice_keeps_data_and_does_not_leak(self, tmp_path):
+        path = str(tmp_path / "twice.db")
+        db = Database(path)
+        db.initialize()
+        await db.add_message("potus", "Kept.", topic_id=1)
+        # A second initialize must close the first handle, not strand it.
+        db.initialize()
+        msgs = await db.get_messages()
+        assert [m.text for m in msgs] == ["Kept."]
+        db.close()
+
+    def test_error_bodies_never_leak_the_api_key(self):
+        from llm_client import LLMClient
+
+        secret = "nvapi-thisisnotarealkey"
+        client = LLMClient("http://x/v1", "m", secret)
+        leaked = f'{{"error":"invalid key {secret}"}}'
+        redacted = client._redact(leaked)
+        assert secret not in redacted
+        assert "[REDACTED]" in redacted
+
+    def test_redact_handles_empty_input(self):
+        from llm_client import LLMClient
+
+        client = LLMClient("http://x/v1", "m", "key")
+        assert client._redact("") == ""
+
+    def test_html_caps_rendered_messages(self):
+        from web_server import build_html_page
+
+        html = build_html_page()
+        assert "MAX_RENDERED" in html
+        assert "trimTranscript" in html
+
+    def test_trim_keeps_newest_and_forgets_old_ids(self):
+        """Python mirror of the JS transcript cap."""
+        max_rendered = 5
+        children = []
+        rendered = {}
+        for mid in range(1, 21):
+            children.append(mid)
+            rendered[str(mid)] = True
+            while len(children) > max_rendered:
+                oldest = children.pop(0)
+                rendered.pop(str(oldest), None)
+        assert children == [16, 17, 18, 19, 20]
+        assert set(rendered) == {"16", "17", "18", "19", "20"}
+
+
+class TestTopicRecency:
+    @pytest.mark.asyncio
+    async def test_recent_topic_links_follow_activation_not_creation(self, db):
+        """A revisited topic reuses its row, so id order is not recency."""
+        await db.get_or_create_topic("A.", "http://a", "s")
+        await db.get_or_create_topic("B.", "http://b", "s")
+        await db.get_or_create_topic("C.", "http://c", "s")
+        # Revisit the oldest topic; it must now count as the most recent.
+        await db.get_or_create_topic("A.", "http://a", "s")
+        recent = await db.get_recent_topic_links(3)
+        assert recent[0] == "http://a"
+
+    @pytest.mark.asyncio
+    async def test_revisit_skips_recently_discussed(self, db):
+        feed = ListFeed([
+            FeedItem("A.", "http://a", "s"),
+            FeedItem("B.", "http://b", "s"),
+            FeedItem("C.", "http://c", "s"),
+            FeedItem("D.", "http://d", "s"),
+        ])
+        eng = make_engine(db, CountingLLM(), feed, topic_turns_min=1, topic_turns_max=1)
+        await eng.refresh_feed()
+        visited = []
+        for _ in range(8):
+            await eng._produce_message()
+            active = await db.get_active_topic()
+            visited.append(active.title)
+        # No headline may be revisited while it is still one of the last three.
+        for i in range(3, len(visited)):
+            assert visited[i] not in visited[max(0, i - 3):i] or visited[i] == visited[i - 1]
+
+
+class TestIdleBehaviour:
+    @pytest.mark.asyncio
+    async def test_produce_reports_whether_it_stored_anything(self, db):
+        feed = ListFeed([FeedItem("H.", "http://a", "s")])
+        eng = make_engine(db, CountingLLM(), feed)
+        # No topic yet: nothing to say.
+        assert await eng._produce_message() is False
+        await eng.refresh_feed()
+        assert await eng._produce_message() is True
+
+    @pytest.mark.asyncio
+    async def test_loop_does_not_spin_without_a_topic(self, db):
+        """With no feed and no topic the loop must idle, not busy-wait."""
+        empty = ListFeed([])
+        eng = make_engine(db, CountingLLM(), empty)
+        await eng.start()
+        try:
+            await asyncio.sleep(0.25)
+            # A spinning loop would call the model thousands of times.
+            assert eng._llm.calls == 0
+        finally:
+            await eng.stop()
+
+
+class TestFeedParsing:
+    def test_plain_rss_item(self):
+        from feed import parse_rss
+
+        xml = """<rss><channel>
+          <item><title>Plain headline</title>
+                <link>http://example.com/a</link>
+                <description>Some &lt;b&gt;summary&lt;/b&gt;.</description></item>
+        </channel></rss>"""
+        items = parse_rss(xml)
+        assert len(items) == 1
+        assert items[0].link == "http://example.com/a"
+        assert items[0].summary == "Some summary."
+
+    def test_atom_style_link_is_not_dropped(self):
+        """An empty atom:link must not shadow the real URL."""
+        from feed import parse_rss
+
+        xml = """<rss xmlns:atom="http://www.w3.org/2005/Atom"><channel>
+          <item><title>Namespaced headline</title>
+                <atom:link href="http://example.com/atom" rel="self"/>
+                <link>http://example.com/real</link>
+                <description>Body.</description></item>
+        </channel></rss>"""
+        items = parse_rss(xml)
+        assert len(items) == 1
+        assert items[0].link in (
+            "http://example.com/real",
+            "http://example.com/atom",
+        )
+
+    def test_item_without_link_is_skipped(self):
+        from feed import parse_rss
+
+        xml = "<rss><channel><item><title>No link</title></item></channel></rss>"
+        assert parse_rss(xml) == []
+
+    def test_malformed_xml_does_not_raise(self):
+        from feed import parse_rss
+
+        assert isinstance(parse_rss("<rss><channel><item><title>x"), list)

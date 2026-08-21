@@ -19,8 +19,6 @@ The same logic is mirrored in the JavaScript in web_server.py.
 import os
 import sys
 
-import pytest
-
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from tests.fixtures import SCROLL_FIXTURE
 

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from dataclasses import dataclass
 from typing import List, Optional
 
@@ -31,14 +32,42 @@ class FeedItem:
     summary: str
 
 
+# Punctuation that must not be preceded by a space once tags are removed.
+_SPACE_BEFORE_PUNCT = re.compile(r"\s+([,.;:!?%)\]}])")
+
+
 def _strip_html(text: str) -> str:
-    """Remove HTML tags and collapse whitespace."""
+    """Remove HTML tags and collapse whitespace.
+
+    Tags are replaced with a space so that "a<br>b" does not become "ab";
+    that would otherwise leave a stray space before punctuation whenever
+    the source wraps a word in markup, as in "<b>summary</b>.".
+    """
     if not text:
         return ""
     if BeautifulSoup is not None:
         soup = BeautifulSoup(text, "html.parser")
         text = soup.get_text(separator=" ")
-    return " ".join(text.split())
+    collapsed = " ".join(text.split())
+    return _SPACE_BEFORE_PUNCT.sub(r"\1", collapsed)
+
+
+def _extract_link(item) -> str:
+    """Return the first usable link for an RSS item.
+
+    An item may carry several <link> elements: a plain RSS one holding the
+    URL as text, and Atom-style ones carrying it in an href attribute with
+    no text at all. Taking only the first match can therefore yield an
+    empty string and silently drop the whole item.
+    """
+    for candidate in item.find_all("link"):
+        text = (candidate.get_text() or "").strip()
+        if text:
+            return text
+        href = (candidate.get("href") or "").strip()
+        if href:
+            return href
+    return ""
 
 
 def parse_rss(xml_text: str) -> List[FeedItem]:
@@ -52,29 +81,26 @@ def parse_rss(xml_text: str) -> List[FeedItem]:
         result = []
         for it in items:
             title_el = it.find("title")
-            link_el = it.find("link")
             desc_el = it.find("description")
             title = _strip_html(title_el.get_text() if title_el else "")
-            link = (link_el.get_text().strip() if link_el and link_el.get_text() else "")
+            link = _extract_link(it)
             summary = _strip_html(desc_el.get_text() if desc_el else "")
             if title and link:
                 result.append(FeedItem(title=title, link=link, summary=summary))
         return result
     # Fallback regex parser (used only if bs4/lxml unavailable).
-    import re
-
     items = []
     for m in re.finditer(r"<item>(.*?)</item>", xml_text, re.DOTALL):
         block = m.group(1)
-        t = re.search(r"<title>(.*?)</title>", block, re.DOTALL)
-        l = re.search(r"<link>(.*?)</link>", block, re.DOTALL)
-        d = re.search(r"<description>(.*?)</description>", block, re.DOTALL)
-        if t and l:
+        title_m = re.search(r"<title>(.*?)</title>", block, re.DOTALL)
+        link_m = re.search(r"<link>(.*?)</link>", block, re.DOTALL)
+        desc_m = re.search(r"<description>(.*?)</description>", block, re.DOTALL)
+        if title_m and link_m:
             items.append(
                 FeedItem(
-                    title=_strip_html(t.group(1)),
-                    link=l.group(1).strip(),
-                    summary=_strip_html(d.group(1) if d else ""),
+                    title=_strip_html(title_m.group(1)),
+                    link=link_m.group(1).strip(),
+                    summary=_strip_html(desc_m.group(1) if desc_m else ""),
                 )
             )
     return items

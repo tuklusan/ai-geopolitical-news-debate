@@ -37,6 +37,15 @@ MAX_TOPIC_POINTS = 20
 # Topics that may not be immediately revisited.
 NO_REVISIT_RECENT = 3
 
+# Pause before retrying when a turn produced nothing.
+IDLE_SLEEP_SECONDS = 2.0
+
+# Validation reasons that indicate the provider itself failed, as opposed to
+# the model returning something that was merely rejected.
+PROVIDER_FAILURE_REASONS = frozenset(
+    {"model unavailable", "no model output", "no repair output"}
+)
+
 
 def _cfg_num(config, name: str, default, cast=float):
     """Read a numeric setting defensively.
@@ -79,6 +88,11 @@ class ConversationEngine:
         self._tasks: List[asyncio.Task] = []
         # Serializes every LLM attempt and enforces the pacing delay.
         self._llm_gate = asyncio.Lock()
+        # Serializes topic changes. The RSS loop and the conversation loop
+        # can both switch topics; interleaving their awaits would leave the
+        # cached topic fields disagreeing with the active row in SQLite,
+        # after which every generated turn is discarded as "obsolete".
+        self._topic_lock = asyncio.Lock()
         if llm_client is None or not getattr(config, "has_api_key", False):
             self._model_disabled = True
             logger.warning("Model generation unavailable: no API key configured.")
@@ -184,18 +198,21 @@ class ConversationEngine:
                 await self._db.add_known_item(it.link, it.title, it.summary)
                 new_items.append(it)
 
-        if new_items:
-            logger.info("RSS refresh: %d new item(s) of %d.", len(new_items), len(items))
-            # Genuinely new news pre-empts the current discussion immediately.
-            head = new_items[0]
-            await self._switch_topic(
-                QueuedItem(head.link, head.title, head.summary), "new item"
-            )
-        elif self._active_topic_id is None:
-            logger.debug("RSS refresh: no new items; selecting from stored queue.")
-            await self._advance_topic()
-        else:
-            logger.debug("RSS refresh: no new items; topic unchanged.")
+        async with self._topic_lock:
+            if new_items:
+                logger.info(
+                    "RSS refresh: %d new item(s) of %d.", len(new_items), len(items)
+                )
+                # Genuinely new news pre-empts the current discussion.
+                head = new_items[0]
+                await self._switch_topic(
+                    QueuedItem(head.link, head.title, head.summary), "new item"
+                )
+            elif self._active_topic_id is None:
+                logger.debug("RSS refresh: no new items; selecting from stored queue.")
+                await self._advance_topic()
+            else:
+                logger.debug("RSS refresh: no new items; topic unchanged.")
 
     async def _advance_topic(self) -> bool:
         """Move to the next queued item, or revisit the stalest stored one."""
@@ -216,26 +233,32 @@ class ConversationEngine:
 
     async def _maybe_advance_topic(self) -> Optional[StoredTopic]:
         """Return the topic to discuss, advancing when its lifespan is spent."""
-        topic = await self._db.get_active_topic()
-        if topic is None:
-            if await self._advance_topic():
-                topic = await self._db.get_active_topic()
+        async with self._topic_lock:
+            topic = await self._db.get_active_topic()
+            if topic is None:
+                if await self._advance_topic():
+                    topic = await self._db.get_active_topic()
+                return topic
+            turns = await self._db.get_topic_turns(topic.id)
+            if turns >= self._topic_lifespan:
+                logger.info(
+                    "Topic exhausted after %d turns (lifespan %d): %s",
+                    turns,
+                    self._topic_lifespan,
+                    topic.title,
+                )
+                if await self._advance_topic():
+                    topic = await self._db.get_active_topic()
+                else:
+                    # Nothing else to discuss: extend rather than stall.
+                    await self._db.reset_topic_turns(topic.id)
+                    self._topic_lifespan = self._random_lifespan()
+                    # Persist it too, or a restart would restore the
+                    # superseded lifespan and advance at the wrong turn.
+                    await self._db.set_state(
+                        "topic_lifespan", str(self._topic_lifespan)
+                    )
             return topic
-        turns = await self._db.get_topic_turns(topic.id)
-        if turns >= self._topic_lifespan:
-            logger.info(
-                "Topic exhausted after %d turns (lifespan %d): %s",
-                turns,
-                self._topic_lifespan,
-                topic.title,
-            )
-            if await self._advance_topic():
-                topic = await self._db.get_active_topic()
-            else:
-                # Nothing else to discuss: extend rather than stall.
-                await self._db.reset_topic_turns(topic.id)
-                self._topic_lifespan = self._random_lifespan()
-        return topic
 
     def _is_current_topic(self, topic_id: Optional[int], topic_title: Optional[str]) -> bool:
         return (
@@ -325,25 +348,32 @@ class ConversationEngine:
             flat = flat[:157].rstrip() + "…"
         return f"{persona.display_name}: {flat}"
 
-    async def _produce_message(self) -> None:
-        """Generate, validate, and persist one contribution."""
+    async def _produce_message(self) -> bool:
+        """Generate, validate, and persist one contribution.
+
+        Returns True only when a message was stored, so the caller can idle
+        instead of spinning when there is nothing to say.
+        """
         if self._model_disabled:
-            return
+            return False
         topic = await self._maybe_advance_topic()
         if topic is None:
-            return
+            return False
         last_speaker = await self._db.get_last_speaker()
         recent_speakers = await self._db.get_recent_speakers(SPEAKER_WINDOW)
         persona = self.choose_next_speaker(last_speaker, recent_speakers)
         version_at_start = self._topic_version
         text, result = await self._generate_one(persona, topic)
         if text is None:
-            self._model_healthy = False
-            return
+            # Only a provider failure means the model is unhealthy. A
+            # rejected-but-delivered response says the endpoint is fine.
+            if result.reason in PROVIDER_FAILURE_REASONS:
+                self._model_healthy = False
+            return False
         # Re-check topic currency before storing (topic may have changed).
         if not self._is_current_topic(topic.id, topic.title) or version_at_start != self._topic_version:
             logger.info("Discarding response for obsolete topic: %s", topic.title)
-            return
+            return False
         await self._db.add_message(persona.key, text, topic_id=topic.id)
         await self._db.increment_topic_turns(topic.id)
         await self._db.append_topic_point(
@@ -354,6 +384,7 @@ class ConversationEngine:
             self._recent_lines = self._recent_lines[-CONTEXT_TURNS:]
         self._model_healthy = True
         logger.info("Turn stored: %s on topic %s", persona.key, topic.id)
+        return True
 
     async def _conversation_loop(self) -> None:
         """Main loop. Pacing is enforced per attempt by the LLM limiter."""
@@ -362,10 +393,16 @@ class ConversationEngine:
                 if self._model_disabled:
                     await asyncio.sleep(5)
                     continue
-                await self._produce_message()
-                # Yield so a cancelled loop stops promptly even when the
-                # limiter delay is configured to zero.
-                await asyncio.sleep(0)
+                produced = await self._produce_message()
+                if produced:
+                    # Yield so a cancelled loop stops promptly even when the
+                    # limiter delay is configured to zero.
+                    await asyncio.sleep(0)
+                else:
+                    # No topic yet, or the turn was dropped. Without this the
+                    # loop spins at full CPU whenever there is nothing to say
+                    # (for example while the feed is unreachable at startup).
+                    await asyncio.sleep(IDLE_SLEEP_SECONDS)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001 - never crash the loop

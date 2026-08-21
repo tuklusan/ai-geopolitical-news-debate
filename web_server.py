@@ -262,6 +262,9 @@ var renderedIds = {};
 var isFollowing = true;       // viewer is at/near bottom
 var unseenCount = 0;          // messages added while not following
 var pollIntervalMs = 2000;
+/* The wall is designed to stay open for days. Without a cap the transcript
+   grows without bound and the tab's memory grows with it. */
+var MAX_RENDERED = 500;
 
 /* ---------- Persona sidebar ---------- */
 function renderSidebar() {
@@ -309,6 +312,20 @@ function renderMessage(msg) {
   return div;
 }
 
+function trimTranscript() {
+  // Never remove content above a viewer who is reading older messages:
+  // dropping nodes off the top shifts scrollTop and jerks their position.
+  // The cap is reapplied as soon as they return to the bottom.
+  if (!isFollowing) return;
+  while (transcript.children.length > MAX_RENDERED) {
+    var oldest = transcript.firstElementChild;
+    if (!oldest) break;
+    var oldId = oldest.getAttribute('data-id');
+    if (oldId !== null) delete renderedIds[oldId];
+    transcript.removeChild(oldest);
+  }
+}
+
 /* ---------- Scroll management ---------- */
 function isNearBottom() {
   // Threshold: within 80px of the bottom of the transcript container.
@@ -341,15 +358,15 @@ jumpBtn.addEventListener('click', function() {
 /* ---------- Polling & update ---------- */
 function applyMessages(messages) {
   var newCount = 0;
-  var lastDiv = null;
   messages.forEach(function(msg) {
     if (renderedIds[msg.id]) return;
     renderedIds[msg.id] = true;
-    lastDiv = renderMessage(msg);
+    renderMessage(msg);
     lastSeenId = Math.max(lastSeenId, msg.id);
     newCount++;
   });
   if (newCount === 0) return;
+  trimTranscript();
 
   if (isFollowing) {
     // Already at/near bottom: scroll the transcript container to newest.

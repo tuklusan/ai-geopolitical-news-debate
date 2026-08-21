@@ -7,7 +7,6 @@ blocks are rejected, empty responses are rejected, mid-sentence responses are
 rejected, overlong responses are rejected, persona word limits are enforced,
 and Gronk produces exactly three valid lines.
 """
-import pytest
 import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
