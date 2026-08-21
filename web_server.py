@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from typing import Optional
 
 from aiohttp import web
@@ -18,6 +19,10 @@ from database import Database
 from engine import ConversationEngine
 
 logger = logging.getLogger("live_news_wall.web")
+
+# Message page size: the documented default and hard ceiling.
+DEFAULT_LIMIT = 100
+MAX_LIMIT = 500
 
 
 def build_html_page() -> str:
@@ -63,6 +68,9 @@ HTML_PAGE = r"""<!DOCTYPE html>
   body {
     display: flex; flex-direction: column;
     min-height: 100vh; height: 100vh;
+    /* Dynamic viewport units keep the bottom disclaimer on screen when a
+       mobile browser's URL bar shows or hides. */
+    min-height: 100dvh; height: 100dvh;
   }
 
   /* Disclaimer bars - permanent top & bottom */
@@ -204,6 +212,12 @@ HTML_PAGE = r"""<!DOCTYPE html>
     .transcript-wrap { padding: 6px; }
     .disclaimer { font-size: 11px; padding: 0 6px; }
     .jump-btn { bottom: 12px; right: 12px; padding: 7px 14px; }
+  }
+
+  /* Respect a viewer who has asked for reduced motion. */
+  @media (prefers-reduced-motion: reduce) {
+    .transcript { scroll-behavior: auto; }
+    .jump-btn { transition: none; }
   }
 </style>
 </head>
@@ -419,26 +433,65 @@ class WebServer:
         return web.Response(text=build_html_page(), content_type="text/html")
 
     async def _messages(self, request: web.Request) -> web.Response:
-        since = 0
+        raw_since = request.query.get("since", "0")
         try:
-            since = int(request.query.get("since", "0"))
+            since = int(raw_since)
         except (ValueError, TypeError):
-            since = 0
-        stored = await self._db.get_messages(since_id=since, limit=500)
+            return self._bad_request("since must be an integer")
+        if since < 0:
+            return self._bad_request("since must not be negative")
+
+        raw_limit = request.query.get("limit", str(DEFAULT_LIMIT))
+        try:
+            limit = int(raw_limit)
+        except (ValueError, TypeError):
+            return self._bad_request("limit must be an integer")
+        if limit < 1:
+            return self._bad_request("limit must be at least 1")
+        limit = min(limit, MAX_LIMIT)
+
+        if since == 0:
+            # A fresh client must land on the newest conversation, not the
+            # oldest page of a long transcript.
+            stored = await self._db.get_latest_messages(limit)
+            truncated = await self._db.count_messages() > len(stored)
+        else:
+            # Fetch one extra row to detect truncation without a second query.
+            stored = await self._db.get_messages(since_id=since, limit=limit + 1)
+            truncated = len(stored) > limit
+            if truncated:
+                stored = stored[:limit]
         topic = await self._db.get_active_topic()
         messages = [m.to_dict() for m in stored]
         payload = {
             "messages": messages,
+            "latest_id": messages[-1]["id"] if messages else since,
+            "truncated": truncated,
             "topic": topic.title if topic else None,
+            "topic_id": topic.id if topic else None,
+            "topic_link": topic.link if topic else None,
             "health": self._engine.health(),
+            "server_time": time.time(),
         }
-        return web.json_response(payload)
+        return self._json(payload)
 
     async def _healthz(self, request: web.Request) -> web.Response:
         h = self._engine.health()
         ok = h["rss_healthy"] and (h["model_healthy"] or h["model_disabled"])
         status = 200 if ok else 503
-        return web.json_response(h, status=status)
+        return self._json(h, status=status)
+
+    @staticmethod
+    def _json(payload: dict, status: int = 200) -> web.Response:
+        """Return a JSON response that is never cached by the browser."""
+        return web.json_response(
+            payload, status=status, headers={"Cache-Control": "no-store"}
+        )
+
+    @classmethod
+    def _bad_request(cls, detail: str) -> web.Response:
+        """Return a small JSON 400. Never leaks internals to the client."""
+        return cls._json({"error": "bad_request", "detail": detail}, status=400)
 
     async def start(self, host: str, port: int) -> None:
         self._runner = web.AppRunner(self._app)

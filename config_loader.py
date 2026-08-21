@@ -32,7 +32,19 @@ DEFAULTS = {
     "RSS_REFRESH_INTERVAL_SECONDS": "300",
     "MESSAGE_MIN_DELAY_SECONDS": "3",
     "MESSAGE_MAX_DELAY_SECONDS": "6",
+    "TOPIC_TURNS_MIN": "8",
+    "TOPIC_TURNS_MAX": "12",
 }
+
+PLACEHOLDER_KEYS = {
+    "replace-with-your-real-api-key",
+    "your-api-key-here",
+    "changeme",
+}
+
+
+class ConfigError(ValueError):
+    """Raised when configuration values are missing or invalid."""
 
 
 @dataclass(frozen=True)
@@ -50,13 +62,40 @@ class Config:
     port: int
     db_path: str
     rss_refresh_interval_seconds: int
-    message_min_delay_seconds: int
-    message_max_delay_seconds: int
+    message_min_delay_seconds: float
+    message_max_delay_seconds: float
+    topic_turns_min: int
+    topic_turns_max: int
 
     @property
     def has_api_key(self) -> bool:
         """Return True when a non-empty API key is configured."""
         return bool(self.llm_api_key and self.llm_api_key.strip())
+
+    def public_summary(self) -> dict:
+        """Return non-secret settings suitable for logging."""
+        return {
+            "llm_base_url": self.llm_base_url,
+            "llm_model": self.llm_model,
+            "llm_api_key_present": self.has_api_key,
+            "rss_feed_url": self.rss_feed_url,
+            "host": self.host,
+            "port": self.port,
+            "db_path": self.db_path,
+            "rss_refresh_interval_seconds": self.rss_refresh_interval_seconds,
+            "message_delay_seconds": (
+                self.message_min_delay_seconds,
+                self.message_max_delay_seconds,
+            ),
+            "topic_turns": (self.topic_turns_min, self.topic_turns_max),
+        }
+
+
+def _as_number(raw: str, key: str, cast):
+    try:
+        return cast(raw)
+    except (TypeError, ValueError):
+        raise ConfigError(f"{key} must be a number, got {raw!r}") from None
 
 
 def load_config(env_file: str = "config/.env") -> Config:
@@ -71,6 +110,11 @@ def load_config(env_file: str = "config/.env") -> Config:
     -------
     Config
         Frozen configuration object.
+
+    Raises
+    ------
+    ConfigError
+        If a value is malformed or outside its permitted range.
     """
     if os.path.exists(env_file):
         try:
@@ -80,23 +124,72 @@ def load_config(env_file: str = "config/.env") -> Config:
             pass
 
     def _get(key: str) -> str:
-        return os.environ.get(key, DEFAULTS[key])
+        value = os.environ.get(key)
+        if value is None or value == "":
+            return DEFAULTS[key]
+        return value
 
-    raw_key = os.environ.get("LLM_API_KEY", "").strip()
-    api_key = raw_key if raw_key and raw_key != "replace-with-your-real-api-key" else None
+    # LLM_API_KEY falls back to API_KEY, and LLM_BASE_URL to BASE_URL, so an
+    # existing OpenAI-compatible environment works unchanged.
+    raw_key = (os.environ.get("LLM_API_KEY") or os.environ.get("API_KEY") or "").strip()
+    api_key = raw_key if raw_key and raw_key not in PLACEHOLDER_KEYS else None
+
+    base_url = os.environ.get("LLM_BASE_URL") or os.environ.get("BASE_URL") or DEFAULTS["LLM_BASE_URL"]
+
+    temperature = _as_number(_get("LLM_TEMPERATURE"), "LLM_TEMPERATURE", float)
+    max_tokens = _as_number(_get("LLM_MAX_TOKENS"), "LLM_MAX_TOKENS", int)
+    timeout_seconds = _as_number(_get("LLM_TIMEOUT_SECONDS"), "LLM_TIMEOUT_SECONDS", float)
+    port = _as_number(_get("PORT"), "PORT", int)
+    refresh = _as_number(
+        _get("RSS_REFRESH_INTERVAL_SECONDS"), "RSS_REFRESH_INTERVAL_SECONDS", int
+    )
+    min_delay = _as_number(
+        _get("MESSAGE_MIN_DELAY_SECONDS"), "MESSAGE_MIN_DELAY_SECONDS", float
+    )
+    max_delay = _as_number(
+        _get("MESSAGE_MAX_DELAY_SECONDS"), "MESSAGE_MAX_DELAY_SECONDS", float
+    )
+    turns_min = _as_number(_get("TOPIC_TURNS_MIN"), "TOPIC_TURNS_MIN", int)
+    turns_max = _as_number(_get("TOPIC_TURNS_MAX"), "TOPIC_TURNS_MAX", int)
+
+    if not 1 <= port <= 65535:
+        raise ConfigError(f"PORT must be between 1 and 65535, got {port}")
+    if refresh <= 0:
+        raise ConfigError(f"RSS_REFRESH_INTERVAL_SECONDS must be positive, got {refresh}")
+    if min_delay < 0 or max_delay < 0:
+        raise ConfigError("MESSAGE_MIN/MAX_DELAY_SECONDS must not be negative")
+    if max_delay < min_delay:
+        raise ConfigError(
+            f"MESSAGE_MAX_DELAY_SECONDS ({max_delay}) is below "
+            f"MESSAGE_MIN_DELAY_SECONDS ({min_delay})"
+        )
+    if turns_min < 1:
+        raise ConfigError(f"TOPIC_TURNS_MIN must be at least 1, got {turns_min}")
+    if turns_max < turns_min:
+        raise ConfigError(
+            f"TOPIC_TURNS_MAX ({turns_max}) is below TOPIC_TURNS_MIN ({turns_min})"
+        )
+    if max_tokens <= 0:
+        raise ConfigError(f"LLM_MAX_TOKENS must be positive, got {max_tokens}")
+    if timeout_seconds <= 0:
+        raise ConfigError(f"LLM_TIMEOUT_SECONDS must be positive, got {timeout_seconds}")
+    if temperature < 0:
+        raise ConfigError(f"LLM_TEMPERATURE must not be negative, got {temperature}")
 
     return Config(
-        llm_base_url=_get("LLM_BASE_URL"),
+        llm_base_url=base_url,
         llm_model=_get("LLM_MODEL"),
-        llm_temperature=float(_get("LLM_TEMPERATURE")),
-        llm_max_tokens=int(_get("LLM_MAX_TOKENS")),
-        llm_timeout_seconds=float(_get("LLM_TIMEOUT_SECONDS")),
+        llm_temperature=temperature,
+        llm_max_tokens=max_tokens,
+        llm_timeout_seconds=timeout_seconds,
         llm_api_key=api_key,
         rss_feed_url=_get("RSS_FEED_URL"),
         host=_get("HOST"),
-        port=int(_get("PORT")),
+        port=port,
         db_path=_get("DB_PATH"),
-        rss_refresh_interval_seconds=int(_get("RSS_REFRESH_INTERVAL_SECONDS")),
-        message_min_delay_seconds=int(_get("MESSAGE_MIN_DELAY_SECONDS")),
-        message_max_delay_seconds=int(_get("MESSAGE_MAX_DELAY_SECONDS")),
+        rss_refresh_interval_seconds=refresh,
+        message_min_delay_seconds=min_delay,
+        message_max_delay_seconds=max_delay,
+        topic_turns_min=turns_min,
+        topic_turns_max=turns_max,
     )

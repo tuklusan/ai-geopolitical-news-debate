@@ -22,10 +22,11 @@ from __future__ import annotations
 import asyncio
 import logging
 import signal
+import socket
 import sys
-from typing import Optional
+from typing import List, Optional
 
-from config_loader import Config, load_config
+from config_loader import Config, ConfigError, load_config
 from database import Database
 from engine import ConversationEngine
 from feed import FeedClient
@@ -37,6 +38,22 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
 )
 logger = logging.getLogger("live_news_wall")
+
+
+def detected_lan_urls(port: int) -> List[str]:
+    """Return http URLs for every detected non-loopback IPv4 address."""
+    urls: List[str] = []
+    try:
+        for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+            address = info[4][0]
+            if address.startswith("127.") or address in urls:
+                continue
+            url = f"http://{address}:{port}/"
+            if url not in urls:
+                urls.append(url)
+    except OSError as exc:
+        logger.debug("Could not enumerate LAN addresses: %s", exc)
+    return urls
 
 
 class Application:
@@ -72,20 +89,43 @@ class Application:
             await self._engine.stop()
             self._db.close()
             raise
-        logger.info("Live News Debate Wall started on http://%s:%s", self._cfg.host, self._cfg.port)
+
+        self._log_startup_banner()
         stop_event = asyncio.Event()
+        loop = asyncio.get_running_loop()
 
         def _stop(*_args):
-            stop_event.set()
+            loop.call_soon_threadsafe(stop_event.set)
 
-        loop = asyncio.get_running_loop()
         for sig in (signal.SIGINT, signal.SIGTERM):
             try:
                 loop.add_signal_handler(sig, _stop)
-            except NotImplementedError:
-                pass
-        await stop_event.wait()
+            except (NotImplementedError, AttributeError, ValueError):
+                # Windows has no loop signal handlers; fall back to the
+                # synchronous handler so shutdown is still graceful.
+                try:
+                    signal.signal(sig, _stop)
+                except (OSError, ValueError, AttributeError):
+                    logger.debug("Could not install a handler for %s", sig)
+
+        try:
+            await stop_event.wait()
+        except asyncio.CancelledError:
+            pass
         await self._shutdown()
+
+    def _log_startup_banner(self) -> None:
+        """Log the listening URLs and the non-secret configuration."""
+        logger.info(
+            "Live News Debate Wall started on http://%s:%s",
+            self._cfg.host,
+            self._cfg.port,
+        )
+        logger.info("Local URL: http://127.0.0.1:%s/", self._cfg.port)
+        for url in detected_lan_urls(self._cfg.port):
+            logger.info("LAN URL:   %s", url)
+        for key, value in self._cfg.public_summary().items():
+            logger.info("config %s = %s", key, value)
 
     async def _shutdown(self) -> None:
         logger.info("Shutting down…")
@@ -98,7 +138,12 @@ class Application:
 def main() -> None:
     """Entry point for direct execution."""
     try:
-        asyncio.run(Application().run())
+        app = Application()
+    except ConfigError as exc:
+        logger.error("Configuration error: %s", exc)
+        sys.exit(2)
+    try:
+        asyncio.run(app.run())
     except KeyboardInterrupt:
         logger.info("Interrupted by user.")
 

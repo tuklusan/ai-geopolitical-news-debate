@@ -1,9 +1,11 @@
-﻿"""
+"""
 Conversation engine for Live News Debate Wall.
 
-Coordinates RSS topic discovery, randomized non-consecutive speaker
-selection, LLM generation, defensive validation, single repair retry, and
-SQLite persistence. Discards responses generated for obsolete topics.
+Coordinates RSS topic discovery, a bounded topic queue with per-topic turn
+lifespans, weighted non-consecutive speaker selection, LLM generation behind
+a single pacing limiter, defensive validation, one repair retry, per-topic
+memory of points already made, and SQLite persistence. Responses generated
+for a superseded topic are discarded.
 """
 from __future__ import annotations
 
@@ -14,14 +16,39 @@ from typing import List, Optional, Tuple
 
 import aiohttp
 
-import personas as persona_mod
-from database import Database, StoredTopic
+from database import Database, QueuedItem, StoredTopic
 from feed import FeedClient, FeedItem
 from llm_client import LLMClient
 from personas import Persona, PERSONAS, persona_keys
 from validator import ValidationResult, validate_output, repair_instruction
 
 logger = logging.getLogger("live_news_wall.engine")
+
+# Speaker balancing window and the usage count at which a persona is damped.
+SPEAKER_WINDOW = 8
+SPEAKER_HEAVY_USE = 3
+SPEAKER_DAMPED_WEIGHT = 0.25
+SPEAKER_NORMAL_WEIGHT = 1.0
+
+# How many prior visible turns are sent to the model as context.
+CONTEXT_TURNS = 12
+# How many distinct points are remembered per topic.
+MAX_TOPIC_POINTS = 20
+# Topics that may not be immediately revisited.
+NO_REVISIT_RECENT = 3
+
+
+def _cfg_num(config, name: str, default, cast=float):
+    """Read a numeric setting defensively.
+
+    Test doubles supply ``MagicMock`` attributes for settings they do not
+    care about; casting those raises ``TypeError``. Fall back to the
+    documented default rather than crashing the engine.
+    """
+    try:
+        return cast(getattr(config, name, default))
+    except (TypeError, ValueError):
+        return default
 
 
 class ConversationEngine:
@@ -40,15 +67,33 @@ class ConversationEngine:
         self._cfg = config
         self._active_topic_id: Optional[int] = None
         self._active_topic_title: Optional[str] = None
+        self._active_topic_link: Optional[str] = None
+        self._topic_version = 0
+        self._topic_lifespan = self._random_lifespan()
         self._recent_lines: List[str] = []
         self._rss_healthy = False
         self._model_healthy = False
         self._model_disabled = False
         self._running = False
         self._http_session: Optional[aiohttp.ClientSession] = None
+        self._tasks: List[asyncio.Task] = []
+        # Serializes every LLM attempt and enforces the pacing delay.
+        self._llm_gate = asyncio.Lock()
         if llm_client is None or not getattr(config, "has_api_key", False):
             self._model_disabled = True
             logger.warning("Model generation unavailable: no API key configured.")
+
+    # ------------------------------------------------------------------
+    # settings
+    # ------------------------------------------------------------------
+    def _random_lifespan(self) -> int:
+        lo = int(_cfg_num(self._cfg, "topic_turns_min", 8, int))
+        hi = int(_cfg_num(self._cfg, "topic_turns_max", 12, int))
+        if lo < 1:
+            lo = 1
+        if hi < lo:
+            hi = lo
+        return random.randint(lo, hi)
 
     # ------------------------------------------------------------------
     # health
@@ -65,50 +110,132 @@ class ConversationEngine:
     def model_disabled(self) -> bool:
         return self._model_disabled
 
+    @property
+    def topic_version(self) -> int:
+        return self._topic_version
+
     # ------------------------------------------------------------------
     # speaker selection
     # ------------------------------------------------------------------
-    def choose_next_speaker(self, last_speaker: Optional[str]) -> Persona:
-        """Pick a random persona that is not the previous speaker."""
+    def choose_next_speaker(
+        self,
+        last_speaker: Optional[str],
+        recent_speakers: Optional[List[str]] = None,
+    ) -> Persona:
+        """Pick a weighted random persona that is not the previous speaker.
+
+        Any persona that already used three or more of the last eight visible
+        turns is damped rather than removed, so every persona stays
+        selectable while long runs remain reasonably balanced.
+        """
         keys = persona_keys()
         candidates = [k for k in keys if k != last_speaker]
         if not candidates:
-            candidates = keys
-        return PERSONAS[random.choice(candidates)]
+            candidates = list(keys)
+        window = list(recent_speakers or [])[:SPEAKER_WINDOW]
+        weights = []
+        for key in candidates:
+            used = window.count(key)
+            if used >= SPEAKER_HEAVY_USE:
+                weights.append(SPEAKER_DAMPED_WEIGHT)
+            else:
+                weights.append(SPEAKER_NORMAL_WEIGHT)
+        chosen = random.choices(candidates, weights=weights, k=1)[0]
+        return PERSONAS[chosen]
 
-    # ------------------------------------------------------------------
     # ------------------------------------------------------------------
     # topic management
     # ------------------------------------------------------------------
+    async def _switch_topic(self, item: QueuedItem, reason: str) -> None:
+        """Make ``item`` the active topic and invalidate in-flight results."""
+        topic_id = await self._db.get_or_create_topic(item.title, item.link, item.summary)
+        await self._db.reset_topic_turns(topic_id)
+        await self._db.mark_item_discussed(item.link)
+        self._active_topic_id = topic_id
+        self._active_topic_title = item.title
+        self._active_topic_link = item.link
+        self._topic_lifespan = self._random_lifespan()
+        self._topic_version += 1
+        # Old context belongs to the previous headline; drop it.
+        self._recent_lines = []
+        await self._db.set_state("topic_version", str(self._topic_version))
+        await self._db.set_state("topic_lifespan", str(self._topic_lifespan))
+        logger.info(
+            "Active topic (%s): %s (id=%s, lifespan=%s turns, version=%s)",
+            reason,
+            item.title,
+            topic_id,
+            self._topic_lifespan,
+            self._topic_version,
+        )
+
     async def refresh_feed(self) -> None:
-        """Fetch the RSS feed, register new items, and activate newest topic."""
-        assert self._http_session is not None
+        """Fetch the RSS feed, register new items, and react to new news."""
         items = await self._feed.fetch_items(session=self._http_session)
         if not items:
             self._rss_healthy = False
             logger.warning("RSS unavailable; continuing in degraded state.")
             return
         self._rss_healthy = True
+
         new_items: List[FeedItem] = []
         for it in items:
-            known = await self._db.is_known_item(it.link)
-            if not known:
+            if not await self._db.is_known_item(it.link):
                 await self._db.add_known_item(it.link, it.title, it.summary)
                 new_items.append(it)
-        # Activate the newest item as the active topic only when it differs
-        # from the currently active topic. This prevents spurious topic churn
-        # on every refresh cycle when the feed has not changed.
-        newest = items[0]
-        if self._active_topic_title != newest.title:
-            topic_id = await self._db.add_topic(newest.title, newest.link, newest.summary)
-            self._active_topic_id = topic_id
-            self._active_topic_title = newest.title
-            # Topic changed: discard stale recent lines so old context does
-            # not bleed into the new discussion.
-            self._recent_lines = []
-            logger.info("Active topic: %s (id=%s)", newest.title, topic_id)
+
+        if new_items:
+            logger.info("RSS refresh: %d new item(s) of %d.", len(new_items), len(items))
+            # Genuinely new news pre-empts the current discussion immediately.
+            head = new_items[0]
+            await self._switch_topic(
+                QueuedItem(head.link, head.title, head.summary), "new item"
+            )
+        elif self._active_topic_id is None:
+            logger.debug("RSS refresh: no new items; selecting from stored queue.")
+            await self._advance_topic()
         else:
-            logger.debug("Feed refreshed; topic unchanged: %s", newest.title)
+            logger.debug("RSS refresh: no new items; topic unchanged.")
+
+    async def _advance_topic(self) -> bool:
+        """Move to the next queued item, or revisit the stalest stored one."""
+        unseen = await self._db.get_unseen_items()
+        for item in unseen:
+            if item.link != self._active_topic_link:
+                await self._switch_topic(item, "next queued item")
+                return True
+        exclude = await self._db.get_recent_topic_links(NO_REVISIT_RECENT)
+        if self._active_topic_link and self._active_topic_link not in exclude:
+            exclude = list(exclude) + [self._active_topic_link]
+        item = await self._db.get_revisit_item(exclude)
+        if item is not None:
+            await self._switch_topic(item, "revisit from a fresh angle")
+            return True
+        logger.debug("No alternative topic available; continuing current topic.")
+        return False
+
+    async def _maybe_advance_topic(self) -> Optional[StoredTopic]:
+        """Return the topic to discuss, advancing when its lifespan is spent."""
+        topic = await self._db.get_active_topic()
+        if topic is None:
+            if await self._advance_topic():
+                topic = await self._db.get_active_topic()
+            return topic
+        turns = await self._db.get_topic_turns(topic.id)
+        if turns >= self._topic_lifespan:
+            logger.info(
+                "Topic exhausted after %d turns (lifespan %d): %s",
+                turns,
+                self._topic_lifespan,
+                topic.title,
+            )
+            if await self._advance_topic():
+                topic = await self._db.get_active_topic()
+            else:
+                # Nothing else to discuss: extend rather than stall.
+                await self._db.reset_topic_turns(topic.id)
+                self._topic_lifespan = self._random_lifespan()
+        return topic
 
     def _is_current_topic(self, topic_id: Optional[int], topic_title: Optional[str]) -> bool:
         return (
@@ -120,18 +247,38 @@ class ConversationEngine:
     # ------------------------------------------------------------------
     # generation pipeline
     # ------------------------------------------------------------------
+    async def _paced_generate(self, persona: Persona, topic: StoredTopic, **kwargs):
+        """Run one LLM attempt behind the shared pacing limiter.
+
+        Every attempt, including a repair retry, waits a uniformly random
+        interval first, and only one request is in flight at a time.
+        """
+        lo = _cfg_num(self._cfg, "message_min_delay_seconds", 3.0)
+        hi = _cfg_num(self._cfg, "message_max_delay_seconds", 6.0)
+        if hi < lo:
+            hi = lo
+        async with self._llm_gate:
+            delay = random.uniform(lo, hi)
+            logger.debug("Pacing LLM attempt: waiting %.2fs", delay)
+            if delay > 0:
+                await asyncio.sleep(delay)
+            return await self._llm.generate(
+                persona.system_prompt,
+                topic.title,
+                list(self._recent_lines),
+                session=self._http_session,
+                **kwargs,
+            )
+
     async def _generate_one(
         self, persona: Persona, topic: StoredTopic
     ) -> Tuple[Optional[str], ValidationResult]:
         """Generate + validate. At most one repair attempt. Returns text/result."""
         if self._llm is None or self._model_disabled:
             return None, ValidationResult.invalid("model unavailable")
-        recent = list(self._recent_lines)
-        raw = await self._llm.generate(
-            persona.system_prompt,
-            topic.title,
-            recent,
-            session=self._http_session,
+        prior_points = await self._prior_points(topic)
+        raw = await self._paced_generate(
+            persona, topic, topic_summary=topic.summary, prior_points=prior_points
         )
         if raw is None:
             return None, ValidationResult.invalid("no model output")
@@ -140,11 +287,11 @@ class ConversationEngine:
             return result.text, result
         # One repair attempt.
         repair_msg = repair_instruction(persona, result.reason)
-        raw2 = await self._llm.generate(
-            persona.system_prompt,
-            topic.title,
-            recent,
-            session=self._http_session,
+        raw2 = await self._paced_generate(
+            persona,
+            topic,
+            topic_summary=topic.summary,
+            prior_points=prior_points,
             extra_instruction=repair_msg,
         )
         if raw2 is None:
@@ -160,69 +307,147 @@ class ConversationEngine:
         )
         return None, result2
 
+    async def _prior_points(self, topic: StoredTopic) -> List[str]:
+        """Return the points already made on this topic."""
+        try:
+            memory = await self._db.get_topic_memory(topic.id)
+        except Exception as exc:  # noqa: BLE001 - memory is an optimisation
+            logger.warning("Could not read topic memory: %s", exc)
+            return []
+        points = memory.get("points") if isinstance(memory, dict) else None
+        return [str(p) for p in points] if isinstance(points, list) else []
+
+    @staticmethod
+    def _summarize_point(persona: Persona, text: str) -> str:
+        """Condense a visible turn into a short 'already said' note."""
+        flat = " ".join(text.split())
+        if len(flat) > 160:
+            flat = flat[:157].rstrip() + "…"
+        return f"{persona.display_name}: {flat}"
+
     async def _produce_message(self) -> None:
         """Generate, validate, and persist one contribution."""
         if self._model_disabled:
             return
-        topic = await self._db.get_active_topic()
+        topic = await self._maybe_advance_topic()
         if topic is None:
             return
         last_speaker = await self._db.get_last_speaker()
-        persona = self.choose_next_speaker(last_speaker)
+        recent_speakers = await self._db.get_recent_speakers(SPEAKER_WINDOW)
+        persona = self.choose_next_speaker(last_speaker, recent_speakers)
+        version_at_start = self._topic_version
         text, result = await self._generate_one(persona, topic)
         if text is None:
-            # Generation/validation failed; do not store or display anything.
+            self._model_healthy = False
             return
         # Re-check topic currency before storing (topic may have changed).
-        if not self._is_current_topic(topic.id, topic.title):
+        if not self._is_current_topic(topic.id, topic.title) or version_at_start != self._topic_version:
             logger.info("Discarding response for obsolete topic: %s", topic.title)
             return
         await self._db.add_message(persona.key, text, topic_id=topic.id)
+        await self._db.increment_topic_turns(topic.id)
+        await self._db.append_topic_point(
+            topic.id, self._summarize_point(persona, text), MAX_TOPIC_POINTS
+        )
         self._recent_lines.append(f"{persona.display_name}: {text}")
-        if len(self._recent_lines) > 20:
-            self._recent_lines = self._recent_lines[-20:]
+        if len(self._recent_lines) > CONTEXT_TURNS:
+            self._recent_lines = self._recent_lines[-CONTEXT_TURNS:]
         self._model_healthy = True
+        logger.info("Turn stored: %s on topic %s", persona.key, topic.id)
 
     async def _conversation_loop(self) -> None:
-        """Main loop: produce messages spaced by 3-6 seconds."""
-        self._running = True
+        """Main loop. Pacing is enforced per attempt by the LLM limiter."""
         while self._running:
             try:
                 if self._model_disabled:
                     await asyncio.sleep(5)
                     continue
                 await self._produce_message()
+                # Yield so a cancelled loop stops promptly even when the
+                # limiter delay is configured to zero.
+                await asyncio.sleep(0)
+            except asyncio.CancelledError:
+                raise
             except Exception as exc:  # noqa: BLE001 - never crash the loop
                 logger.warning("Conversation loop error: %s", exc)
                 self._model_healthy = False
-            delay = random.uniform(
-                max(1, self._cfg.message_min_delay_seconds),
-                max(2, self._cfg.message_max_delay_seconds),
-            )
-            await asyncio.sleep(delay)
+                await asyncio.sleep(1)
 
     async def _rss_loop(self) -> None:
         """Periodic RSS refresh loop."""
+        interval = max(30, int(_cfg_num(self._cfg, "rss_refresh_interval_seconds", 300, int)))
         while self._running:
+            await asyncio.sleep(interval)
+            if not self._running:
+                return
             try:
                 await self.refresh_feed()
+            except asyncio.CancelledError:
+                raise
             except Exception as exc:  # noqa: BLE001
                 logger.warning("RSS loop error: %s", exc)
                 self._rss_healthy = False
-            await asyncio.sleep(max(30, self._cfg.rss_refresh_interval_seconds))
 
     # ------------------------------------------------------------------
     # lifecycle
     # ------------------------------------------------------------------
+    async def _restore_state(self) -> None:
+        """Restore the active topic, its pacing, and recent context."""
+        topic = await self._db.get_active_topic()
+        if topic is None:
+            return
+        self._active_topic_id = topic.id
+        self._active_topic_title = topic.title
+        self._active_topic_link = topic.link
+        try:
+            self._topic_version = int(await self._db.get_state("topic_version", "0") or 0)
+        except (TypeError, ValueError):
+            self._topic_version = 0
+        try:
+            stored = await self._db.get_state("topic_lifespan")
+            if stored:
+                self._topic_lifespan = max(1, int(stored))
+        except (TypeError, ValueError):
+            pass
+        recent = await self._db.get_latest_messages(CONTEXT_TURNS)
+        lines = []
+        for m in recent:
+            if m.topic_id != topic.id:
+                continue
+            persona = PERSONAS.get(m.speaker)
+            name = persona.display_name if persona else m.speaker
+            lines.append(f"{name}: {m.text}")
+        self._recent_lines = lines
+        logger.info(
+            "Restored topic '%s' (id=%s) with %d context line(s).",
+            topic.title,
+            topic.id,
+            len(lines),
+        )
+
     async def start(self) -> None:
         self._http_session = aiohttp.ClientSession()
+        # Set the running flag before creating tasks: the loops test it on
+        # their first iteration and would otherwise exit immediately.
+        self._running = True
+        try:
+            await self._restore_state()
+        except Exception as exc:  # noqa: BLE001 - a fresh start is acceptable
+            logger.warning("Could not restore prior state: %s", exc)
         # Initial RSS fetch.
         await self.refresh_feed()
-        asyncio.create_task(self._rss_loop())
-        asyncio.create_task(self._conversation_loop())
+        self._tasks = [
+            asyncio.create_task(self._rss_loop()),
+            asyncio.create_task(self._conversation_loop()),
+        ]
 
     async def stop(self) -> None:
         self._running = False
+        for task in self._tasks:
+            task.cancel()
+        if self._tasks:
+            await asyncio.gather(*self._tasks, return_exceptions=True)
+        self._tasks = []
         if self._http_session is not None:
             await self._http_session.close()
             self._http_session = None
@@ -236,4 +461,6 @@ class ConversationEngine:
             "model_healthy": self._model_healthy,
             "model_disabled": self._model_disabled,
             "active_topic": self._active_topic_title,
+            "topic_version": self._topic_version,
+            "topic_lifespan": self._topic_lifespan,
         }

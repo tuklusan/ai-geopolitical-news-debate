@@ -7,6 +7,7 @@ failure so the app continues in a degraded state.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass
 from typing import List, Optional
@@ -79,26 +80,40 @@ def parse_rss(xml_text: str) -> List[FeedItem]:
     return items
 
 
+USER_AGENT = "LiveNewsDebateWall/1.0 (+RSS reader; contact: site owner)"
+
+
 class FeedClient:
     """Fetches RSS items over HTTP with aiohttp."""
 
     def __init__(self, feed_url: str, timeout_seconds: float = 30.0):
         self._feed_url = feed_url
-        self._timeout = aiohttp.ClientTimeout(total=timeout_seconds)
+        self._timeout = aiohttp.ClientTimeout(
+            total=timeout_seconds, connect=min(10.0, timeout_seconds)
+        )
 
     async def fetch_items(self, session: Optional[aiohttp.ClientSession] = None) -> List[FeedItem]:
         """Fetch and parse the feed. Returns [] on any failure."""
         own_session = session is None
         if own_session:
-            session = aiohttp.ClientSession(timeout=self._timeout)
+            session = aiohttp.ClientSession()
         try:
             assert session is not None
-            async with session.get(self._feed_url) as resp:
+            # The timeout is applied per request so it also governs a
+            # caller-supplied session created without one; otherwise a slow
+            # feed can stall application startup indefinitely.
+            async with session.get(
+                self._feed_url,
+                timeout=self._timeout,
+                headers={"User-Agent": USER_AGENT},
+            ) as resp:
                 if resp.status != 200:
                     logger.warning("RSS feed returned status %s", resp.status)
                     return []
                 text = await resp.text()
             return parse_rss(text)
+        except asyncio.CancelledError:
+            raise
         except Exception as exc:  # noqa: BLE001 - degrade gracefully
             logger.warning("RSS fetch failed: %s", exc)
             return []

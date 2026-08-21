@@ -11,8 +11,10 @@ import asyncio
 import json
 import sqlite3
 import time
-from dataclasses import dataclass, field
-from typing import List, Optional
+from dataclasses import dataclass
+from typing import Any, Dict, List, Optional
+
+SCHEMA_VERSION = 2
 
 
 @dataclass(frozen=True)
@@ -46,6 +48,15 @@ class StoredTopic:
     created_at: float
 
 
+@dataclass(frozen=True)
+class QueuedItem:
+    """A feed item eligible to become the active topic."""
+
+    link: str
+    title: str
+    summary: str
+
+
 class Database:
     """Async-friendly SQLite persistence with monotonic message IDs."""
 
@@ -64,6 +75,7 @@ class Database:
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA synchronous=NORMAL")
         self._create_schema()
+        self._migrate()
         self._conn.commit()
 
     def close(self) -> None:
@@ -113,8 +125,66 @@ class Database:
                 memory      TEXT NOT NULL DEFAULT '{}',
                 updated_at  REAL NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS app_state (
+                key         TEXT PRIMARY KEY,
+                value       TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_messages_topic ON messages (topic_id);
+            CREATE INDEX IF NOT EXISTS idx_topics_active ON topics (active);
             """
         )
+
+    def _columns(self, table: str) -> List[str]:
+        rows = self._conn.execute(f"PRAGMA table_info({table})").fetchall()
+        return [r["name"] for r in rows]
+
+    def _migrate(self) -> None:
+        """Add columns introduced after the first release.
+
+        Safe to run repeatedly: each column is added only when absent, so
+        databases created by an older build keep their existing rows.
+        """
+        c = self._conn
+        item_cols = self._columns("known_feed_items")
+        if "times_discussed" not in item_cols:
+            c.execute(
+                "ALTER TABLE known_feed_items "
+                "ADD COLUMN times_discussed INTEGER NOT NULL DEFAULT 0"
+            )
+        if "last_discussed" not in item_cols:
+            c.execute(
+                "ALTER TABLE known_feed_items "
+                "ADD COLUMN last_discussed REAL NOT NULL DEFAULT 0"
+            )
+        topic_cols = self._columns("topics")
+        if "turns" not in topic_cols:
+            c.execute("ALTER TABLE topics ADD COLUMN turns INTEGER NOT NULL DEFAULT 0")
+        c.execute(
+            "INSERT INTO app_state (key, value) VALUES ('schema_version', ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (str(SCHEMA_VERSION),),
+        )
+
+    # ------------------------------------------------------------------
+    # generic key/value state
+    # ------------------------------------------------------------------
+    async def get_state(self, key: str, default: Optional[str] = None) -> Optional[str]:
+        async with self._lock:
+            row = self._conn.execute(
+                "SELECT value FROM app_state WHERE key = ?", (key,)
+            ).fetchone()
+        return row["value"] if row else default
+
+    async def set_state(self, key: str, value: str) -> None:
+        async with self._lock:
+            self._conn.execute(
+                "INSERT INTO app_state (key, value) VALUES (?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (key, str(value)),
+            )
+            self._conn.commit()
 
     # ------------------------------------------------------------------
     # messages
@@ -122,10 +192,13 @@ class Database:
     async def next_message_id(self) -> int:
         """Return the next monotonic message id."""
         async with self._lock:
-            row = self._conn.execute(
-                "SELECT COALESCE(MAX(id), 0) AS m FROM messages"
-            ).fetchone()
-            return int(row["m"]) + 1
+            return self._next_message_id_locked()
+
+    def _next_message_id_locked(self) -> int:
+        row = self._conn.execute(
+            "SELECT COALESCE(MAX(id), 0) AS m FROM messages"
+        ).fetchone()
+        return int(row["m"]) + 1
 
     async def add_message(
         self,
@@ -134,10 +207,14 @@ class Database:
         topic_id: Optional[int] = None,
         created_at: Optional[float] = None,
     ) -> int:
-        """Persist a message and return its id. Never stores malformed text."""
-        mid = await self.next_message_id()
+        """Persist a message and return its id. Never stores malformed text.
+
+        The id is allocated inside the same lock acquisition that performs
+        the insert, so concurrent callers cannot be handed the same id.
+        """
         ts = float(created_at if created_at is not None else time.time())
         async with self._lock:
+            mid = self._next_message_id_locked()
             self._conn.execute(
                 "INSERT INTO messages (id, topic_id, speaker, text, created_at) "
                 "VALUES (?, ?, ?, ?, ?)",
@@ -159,6 +236,22 @@ class Database:
                 (since_id, limit),
             ).fetchall()
         return [StoredMessage(r["id"], r["topic_id"], r["speaker"], r["text"], r["created_at"]) for r in rows]
+
+    async def get_latest_messages(self, limit: int = 100) -> List[StoredMessage]:
+        """Return the newest ``limit`` messages, oldest first."""
+        async with self._lock:
+            rows = self._conn.execute(
+                "SELECT id, topic_id, speaker, text, created_at "
+                "FROM messages ORDER BY id DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        rows = list(reversed(rows))
+        return [StoredMessage(r["id"], r["topic_id"], r["speaker"], r["text"], r["created_at"]) for r in rows]
+
+    async def count_messages(self) -> int:
+        async with self._lock:
+            row = self._conn.execute("SELECT COUNT(*) AS n FROM messages").fetchone()
+        return int(row["n"])
 
     async def get_last_speaker(self) -> Optional[str]:
         async with self._lock:
@@ -185,16 +278,43 @@ class Database:
     async def add_topic(self, title: str, link: str, summary: str) -> int:
         ts = time.time()
         async with self._lock:
-            self._conn.execute(
-                "UPDATE topics SET active = 0"
-            )
+            self._conn.execute("UPDATE topics SET active = 0")
             cur = self._conn.execute(
-                "INSERT INTO topics (title, link, summary, created_at, active) "
-                "VALUES (?, ?, ?, ?, 1)",
+                "INSERT INTO topics (title, link, summary, created_at, active, turns) "
+                "VALUES (?, ?, ?, ?, 1, 0)",
                 (title, link, summary, ts),
             )
             self._conn.commit()
             return int(cur.lastrowid)
+
+    async def get_or_create_topic(self, title: str, link: str, summary: str) -> int:
+        """Activate the existing topic row for ``link``, or create one.
+
+        Revisiting an earlier headline must not accumulate duplicate topic
+        rows, otherwise stored topic memory for that headline is orphaned.
+        """
+        ts = time.time()
+        async with self._lock:
+            row = self._conn.execute(
+                "SELECT id FROM topics WHERE link = ? ORDER BY id DESC LIMIT 1",
+                (link,),
+            ).fetchone()
+            self._conn.execute("UPDATE topics SET active = 0")
+            if row:
+                topic_id = int(row["id"])
+                self._conn.execute(
+                    "UPDATE topics SET active = 1, title = ?, summary = ? WHERE id = ?",
+                    (title, summary, topic_id),
+                )
+            else:
+                cur = self._conn.execute(
+                    "INSERT INTO topics (title, link, summary, created_at, active, turns) "
+                    "VALUES (?, ?, ?, ?, 1, 0)",
+                    (title, link, summary, ts),
+                )
+                topic_id = int(cur.lastrowid)
+            self._conn.commit()
+        return topic_id
 
     async def get_active_topic(self) -> Optional[StoredTopic]:
         async with self._lock:
@@ -205,6 +325,39 @@ class Database:
         if not row:
             return None
         return StoredTopic(row["id"], row["title"], row["link"], row["summary"], row["created_at"])
+
+    async def get_topic_turns(self, topic_id: int) -> int:
+        async with self._lock:
+            row = self._conn.execute(
+                "SELECT turns FROM topics WHERE id = ?", (topic_id,)
+            ).fetchone()
+        return int(row["turns"]) if row else 0
+
+    async def increment_topic_turns(self, topic_id: int) -> int:
+        async with self._lock:
+            self._conn.execute(
+                "UPDATE topics SET turns = turns + 1 WHERE id = ?", (topic_id,)
+            )
+            row = self._conn.execute(
+                "SELECT turns FROM topics WHERE id = ?", (topic_id,)
+            ).fetchone()
+            self._conn.commit()
+        return int(row["turns"]) if row else 0
+
+    async def reset_topic_turns(self, topic_id: int) -> None:
+        async with self._lock:
+            self._conn.execute(
+                "UPDATE topics SET turns = 0 WHERE id = ?", (topic_id,)
+            )
+            self._conn.commit()
+
+    async def get_recent_topic_links(self, n: int = 3) -> List[str]:
+        """Return the links of the ``n`` most recently activated topics."""
+        async with self._lock:
+            rows = self._conn.execute(
+                "SELECT link FROM topics ORDER BY id DESC LIMIT ?", (n,)
+            ).fetchall()
+        return [r["link"] for r in rows]
 
     # ------------------------------------------------------------------
     # known feed items
@@ -222,6 +375,40 @@ class Database:
                 "INSERT OR IGNORE INTO known_feed_items (link, title, summary, first_seen) "
                 "VALUES (?, ?, ?, ?)",
                 (link, title, summary, time.time()),
+            )
+            self._conn.commit()
+
+    async def get_unseen_items(self, limit: int = 50) -> List[QueuedItem]:
+        """Return never-discussed items, newest batch first, feed order within."""
+        async with self._lock:
+            rows = self._conn.execute(
+                "SELECT link, title, summary FROM known_feed_items "
+                "WHERE times_discussed = 0 "
+                "ORDER BY first_seen DESC, rowid ASC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [QueuedItem(r["link"], r["title"], r["summary"]) for r in rows]
+
+    async def get_revisit_item(self, exclude_links: List[str]) -> Optional[QueuedItem]:
+        """Return the least recently discussed item not in ``exclude_links``."""
+        async with self._lock:
+            rows = self._conn.execute(
+                "SELECT link, title, summary FROM known_feed_items "
+                "WHERE times_discussed > 0 ORDER BY last_discussed ASC, rowid ASC"
+            ).fetchall()
+        excluded = set(exclude_links)
+        for r in rows:
+            if r["link"] not in excluded:
+                return QueuedItem(r["link"], r["title"], r["summary"])
+        return None
+
+    async def mark_item_discussed(self, link: str) -> None:
+        async with self._lock:
+            self._conn.execute(
+                "UPDATE known_feed_items "
+                "SET times_discussed = times_discussed + 1, last_discussed = ? "
+                "WHERE link = ?",
+                (time.time(), link),
             )
             self._conn.commit()
 
@@ -251,3 +438,38 @@ class Database:
                 (topic_id, data, time.time()),
             )
             self._conn.commit()
+
+    async def append_topic_point(self, topic_id: int, point: str, max_points: int = 20) -> List[str]:
+        """Append one discussion point to a topic's memory and return the list.
+
+        Read and write happen under a single lock acquisition so two
+        concurrent appends cannot lose one another's point.
+        """
+        async with self._lock:
+            row = self._conn.execute(
+                "SELECT memory FROM topic_memory WHERE topic_id = ?", (topic_id,)
+            ).fetchone()
+            memory: Dict[str, Any] = {}
+            if row and row["memory"]:
+                try:
+                    loaded = json.loads(row["memory"])
+                    if isinstance(loaded, dict):
+                        memory = loaded
+                except Exception:
+                    memory = {}
+            points = memory.get("points")
+            if not isinstance(points, list):
+                points = []
+            points.append(point)
+            if len(points) > max_points:
+                points = points[-max_points:]
+            memory["points"] = points
+            self._conn.execute(
+                "INSERT INTO topic_memory (topic_id, memory, updated_at) "
+                "VALUES (?, ?, ?) "
+                "ON CONFLICT(topic_id) DO UPDATE SET memory = excluded.memory, "
+                "updated_at = excluded.updated_at",
+                (topic_id, json.dumps(memory, ensure_ascii=False), time.time()),
+            )
+            self._conn.commit()
+        return list(points)

@@ -36,8 +36,10 @@ class FakeLLM:
         self.calls = 0
 
     async def generate(self, persona_system, topic_title, recent_lines,
-                       session=None, extra_instruction=None):
+                       session=None, extra_instruction=None, **kwargs):
         self.calls += 1
+        self.last_kwargs = kwargs
+        self.last_recent_lines = list(recent_lines)
         if self._responses:
             return self._responses.pop(0)
         return None
