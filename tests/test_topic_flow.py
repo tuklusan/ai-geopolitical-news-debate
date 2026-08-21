@@ -1,3 +1,17 @@
+# ============================================================================
+# Copyright (c) 2026 Supratim Sanyal of SANYALnet Labs.
+# Proprietary rights reserved except as expressly licensed herein.
+#
+# LIVE NEWS DEBATE WALL
+# This file is governed by the SANYALnet Labs Non-Commercial License in the
+# root LICENSE file. Non-Commercial use is permitted; Commercial Use and use
+# for AI/ML model training are prohibited unless separately authorized.
+#
+# Attribution is required: "Based on original work by Supratim Sanyal of
+# SANYALnet Labs." See LICENSE for full terms, warranty disclaimer, termination,
+# patent, trademark, and governing-law provisions.
+# ============================================================================
+
 """
 Tests for topic advancement, anti-repetition memory, weighted speaker
 selection, restart continuity, and message-API validation.
@@ -574,3 +588,26 @@ class TestRepairInstructionUsesReason:
         msg = repair_instruction(PERSONAS["gronk"], "")
         assert "reason:" not in msg
         assert "three" in msg.lower()
+
+
+class TestLicenceAttribution:
+    """Section 1(b) requires attribution in the user-facing interface."""
+
+    def test_page_carries_attribution(self):
+        from web_server import build_html_page
+
+        html = build_html_page()
+        assert "Based on original work by Supratim Sanyal of" in html.replace(
+            "\n      ", " "
+        ).replace("based on", "Based on")
+        assert "SANYALnet" in html
+
+    def test_attribution_is_outside_the_disclaimer_regions(self):
+        """It must not dilute or displace the parody notices."""
+        from web_server import build_html_page
+
+        html = build_html_page()
+        top = html.index('class="disclaimer top"')
+        bottom = html.index('class="disclaimer bottom"')
+        attribution = html.index('class="attribution"')
+        assert top < attribution < bottom

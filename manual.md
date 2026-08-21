@@ -1,3 +1,10 @@
+> **Historical document.** This describes the application exactly as ChatDev's
+> agents first generated it. The code has since been corrected and extended —
+> topic advancement, anti-repetition memory, speaker balancing, and a batch of
+> review fixes — so details here (including the 68-test figure) no longer match
+> the current build. `README.md` is the authoritative description; the commit
+> history records what changed and why.
+
 # Live News Debate Wall — User & Operations Manual
 
 > **AI Parody — Fictional Satire.** All personas are fictional AI-generated

@@ -1,4 +1,18 @@
-﻿"""
+# ============================================================================
+# Copyright (c) 2026 Supratim Sanyal of SANYALnet Labs.
+# Proprietary rights reserved except as expressly licensed herein.
+#
+# LIVE NEWS DEBATE WALL
+# This file is governed by the SANYALnet Labs Non-Commercial License in the
+# root LICENSE file. Non-Commercial use is permitted; Commercial Use and use
+# for AI/ML model training are prohibited unless separately authorized.
+#
+# Attribution is required: "Based on original work by Supratim Sanyal of
+# SANYALnet Labs." See LICENSE for full terms, warranty disclaimer, termination,
+# patent, trademark, and governing-law provisions.
+# ============================================================================
+
+"""
 aiohttp web server for Live News Debate Wall.
 
 Serves the embedded responsive HTML/CSS/JS interface and JSON API endpoints.
@@ -201,6 +215,15 @@ HTML_PAGE = r"""<!DOCTYPE html>
   .health .ok { color: #3fb950; }
   .health .bad { color: #f85149; }
 
+  /* Attribution required by Section 1(b) of the project licence. */
+  .attribution {
+    font-size: 11px; color: var(--muted);
+    margin: 14px 0 0 0; padding-top: 10px;
+    border-top: 1px solid var(--border);
+    line-height: 1.4;
+  }
+  .attribution a { color: var(--accent); }
+
   /* Mobile layout */
   @media (max-width: 768px) {
     .main { flex-direction: column; }
@@ -240,6 +263,12 @@ HTML_PAGE = r"""<!DOCTYPE html>
     <h2>Debate Panel</h2>
     <div id="personaCards"></div>
     <div class="health" id="health">Health: …</div>
+    <p class="attribution">
+      Live News Debate Wall — based on original work by Supratim Sanyal of
+      SANYALnet&nbsp;Labs. Licensed for non-commercial use; see the LICENSE
+      file. <a href="https://supratim-sanyal.blogspot.com/2026/07/build-live-ai-news-debate-wall-chatdev-linux.html"
+      rel="noopener noreferrer" target="_blank">How this was built</a>.
+    </p>
   </aside>
 </div>
 
