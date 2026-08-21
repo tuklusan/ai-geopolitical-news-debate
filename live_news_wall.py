@@ -35,6 +35,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
+from logging.handlers import RotatingFileHandler
 import signal
 import socket
 import sys
@@ -47,10 +49,33 @@ from feed import FeedClient
 from llm_client import LLMClient
 from web_server import WebServer
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
-)
+def _configure_logging() -> None:
+    """Log to stderr, and optionally to a size-capped rotating file.
+
+    Under systemd, stderr goes to the journal, which rotates already.
+    Under nohup the operator redirects to a file that nothing truncates,
+    so LOG_FILE gives that case a bounded alternative.
+    """
+    level = os.environ.get("LOG_LEVEL", "INFO").upper()
+    fmt = "%(asctime)s %(levelname)s [%(name)s] %(message)s"
+    logging.basicConfig(level=level, format=fmt)
+    path = os.environ.get("LOG_FILE", "").strip()
+    if not path:
+        return
+    try:
+        max_bytes = int(os.environ.get("LOG_MAX_BYTES", 5 * 1024 * 1024))
+        backups = int(os.environ.get("LOG_BACKUP_COUNT", 3))
+    except ValueError:
+        max_bytes, backups = 5 * 1024 * 1024, 3
+    handler = RotatingFileHandler(
+        path, maxBytes=max(1024, max_bytes), backupCount=max(0, backups),
+        encoding="utf-8",
+    )
+    handler.setFormatter(logging.Formatter(fmt))
+    logging.getLogger().addHandler(handler)
+
+
+_configure_logging()
 logger = logging.getLogger("live_news_wall")
 
 

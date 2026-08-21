@@ -24,6 +24,7 @@ These cover the defects found after the first release:
 """
 import asyncio
 import os
+import pathlib
 import sys
 from dataclasses import dataclass
 from typing import List
@@ -55,6 +56,7 @@ class FakeConfig:
     topic_turns_max: int = 12
     feed_retention_items: int = 500
     typing_chars_per_second: float = 25.0
+    transcript_retention_messages: int = 5000
 
 
 class CountingLLM:
@@ -1177,3 +1179,152 @@ class TestTypewriter:
         # 250 characters at the shared default should take the same time
         # the browser will spend typing them.
         assert eng._typing_seconds(250) == pytest.approx(250 / WEB_CPS)
+
+
+class TestBoundedGrowth:
+    """Nothing may grow without limit on a wall left running for months."""
+
+    @pytest.mark.asyncio
+    async def test_transcript_is_capped(self, db):
+        for i in range(300):
+            await db.add_message("potus", f"Message {i}.", topic_id=1)
+        removed = await db.prune_transcript(keep_messages=100)
+        assert removed["messages"] == 200
+        kept = await db.get_messages(limit=1000)
+        assert len(kept) == 100
+        # The newest survive, the oldest go.
+        assert kept[-1].text == "Message 299."
+        assert kept[0].text == "Message 200."
+
+    @pytest.mark.asyncio
+    async def test_speaker_history_is_capped(self, db):
+        for i in range(500):
+            await db.add_message("yoda", f"M{i}.", topic_id=1)
+        await db.prune_transcript(keep_messages=100, speaker_history=60)
+        rows = await db.get_recent_speakers(1000)
+        assert len(rows) == 60
+
+    @pytest.mark.asyncio
+    async def test_speaker_history_never_trimmed_below_the_window(self, db):
+        """The selector reads a window; trimming under it would break it."""
+        from database import SPEAKER_HISTORY_FLOOR
+        from engine import SPEAKER_WINDOW
+
+        assert SPEAKER_HISTORY_FLOOR >= SPEAKER_WINDOW
+        for i in range(200):
+            await db.add_message("eu", f"M{i}.", topic_id=1)
+        await db.prune_transcript(keep_messages=100, speaker_history=1)
+        assert len(await db.get_recent_speakers(1000)) == SPEAKER_HISTORY_FLOOR
+
+    @pytest.mark.asyncio
+    async def test_orphan_topics_and_memory_are_removed(self, db):
+        stale = await db.get_or_create_topic("Stale.", "http://stale", "s")
+        await db.append_topic_point(stale, "a point", 20)
+        live = await db.get_or_create_topic("Live.", "http://live", "s")
+        await db.add_message("potus", "About the live topic.", topic_id=live)
+
+        removed = await db.prune_transcript(keep_messages=100)
+        assert removed["topics"] == 1
+        assert removed["topic_memory"] == 1
+        assert await db.get_topic_memory(stale) == {}
+        # The active topic and anything a retained message refers to survive.
+        assert (await db.get_active_topic()).id == live
+
+    @pytest.mark.asyncio
+    async def test_active_topic_survives_even_with_no_messages(self, db):
+        active = await db.get_or_create_topic("Active.", "http://a", "s")
+        removed = await db.prune_transcript(keep_messages=100)
+        assert removed["topics"] == 0
+        assert (await db.get_active_topic()).id == active
+
+    @pytest.mark.asyncio
+    async def test_pruning_is_idempotent(self, db):
+        for i in range(150):
+            await db.add_message("gronk", f"M{i}.", topic_id=1)
+        first = await db.prune_transcript(keep_messages=100)
+        second = await db.prune_transcript(keep_messages=100)
+        assert first["messages"] == 50
+        assert second["messages"] == 0, "a steady state must not keep deleting"
+
+    @pytest.mark.asyncio
+    async def test_ids_stay_monotonic_after_pruning(self, db):
+        """Pruning must not cause id reuse, which would confuse polling."""
+        for i in range(120):
+            await db.add_message("potus", f"M{i}.", topic_id=1)
+        await db.prune_transcript(keep_messages=10)
+        next_id = await db.add_message("yoda", "After pruning.", topic_id=1)
+        assert next_id == 121
+        msgs = await db.get_messages(limit=100)
+        assert [m.id for m in msgs] == sorted(m.id for m in msgs)
+
+    @pytest.mark.asyncio
+    async def test_engine_prunes_on_refresh(self, db):
+        for i in range(400):
+            await db.add_message("eu", f"Old {i}.", topic_id=1)
+        feed = ListFeed([FeedItem("H.", "http://a", "s", guid="G")])
+        eng = make_engine(db, CountingLLM(), feed, transcript_retention_messages=150)
+        await eng.refresh_feed()
+        assert len(await db.get_messages(limit=1000)) <= 150
+
+    def test_access_logging_is_disabled(self):
+        """Per-request logging dominated the log file: ~95% of all lines."""
+        src = pathlib.Path(__file__).resolve().parents[1] / "web_server.py"
+        assert "access_log=None" in src.read_text(encoding="utf-8")
+
+    def test_config_rejects_a_tiny_transcript_cap(self, monkeypatch):
+        from config_loader import ConfigError, load_config
+
+        monkeypatch.setenv("TRANSCRIPT_RETENTION_MESSAGES", "10")
+        with pytest.raises(ConfigError):
+            load_config("does-not-exist.env")
+
+    def test_log_rotation_caps_the_file(self, tmp_path, monkeypatch):
+        """A nohup deployment must not accumulate an unbounded log."""
+        import logging
+        from logging.handlers import RotatingFileHandler
+        import live_news_wall
+
+        path = tmp_path / "wall.log"
+        monkeypatch.setenv("LOG_FILE", str(path))
+        monkeypatch.setenv("LOG_MAX_BYTES", "20000")
+        monkeypatch.setenv("LOG_BACKUP_COUNT", "2")
+        root = logging.getLogger()
+        before = list(root.handlers)
+        try:
+            live_news_wall._configure_logging()
+            added = [h for h in root.handlers
+                     if isinstance(h, RotatingFileHandler) and h not in before]
+            assert added, "LOG_FILE must install a rotating handler"
+            handler = added[0]
+            assert handler.maxBytes == 20000
+            assert handler.backupCount == 2
+            log = logging.getLogger("live_news_wall.rotation_probe")
+            log.propagate = True
+            for i in range(3000):
+                log.info("a reasonably typical log line number %d with detail", i)
+            handler.close()
+            total = sum(f.stat().st_size for f in tmp_path.glob("wall.log*"))
+            assert total <= 20000 * 3 + 4000, f"log grew to {total} bytes"
+            assert len(list(tmp_path.glob("wall.log*"))) <= 3
+        finally:
+            for h in list(root.handlers):
+                if h not in before:
+                    root.removeHandler(h)
+
+    def test_no_log_file_means_stderr_only(self, monkeypatch):
+        import logging
+        from logging.handlers import RotatingFileHandler
+        import live_news_wall
+
+        monkeypatch.delenv("LOG_FILE", raising=False)
+        root = logging.getLogger()
+        before = list(root.handlers)
+        try:
+            live_news_wall._configure_logging()
+            added = [h for h in root.handlers
+                     if isinstance(h, RotatingFileHandler) and h not in before]
+            assert not added
+        finally:
+            for h in list(root.handlers):
+                if h not in before:
+                    root.removeHandler(h)

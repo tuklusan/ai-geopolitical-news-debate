@@ -72,7 +72,10 @@ Settings come from the process environment first, then `config/.env`, then these
 | `MAX_CLIENTS` | `1024` | Concurrent request ceiling. Excess gets a small 503 with `Retry-After`, never an unbounded queue. |
 | `FEED_RETENTION_ITEMS` | `500` | How many past stories to keep. Older ones are pruned after each refresh; the active story is never pruned. |
 | `TYPING_CHARS_PER_SECOND` | `25` | Speed of the on-screen typewriter. Also the main brake on how often the model is called — see below. |
+| `TRANSCRIPT_RETENTION_MESSAGES` | `5000` | Transcript messages kept. Older ones are pruned, with their speaker history and orphaned topics. Minimum 100. |
 | `DB_PATH` | `live_news_wall.db` | SQLite file. |
+| `LOG_FILE` | *(none)* | Optional rotating log file. Empty means stderr only. |
+| `LOG_MAX_BYTES` / `LOG_BACKUP_COUNT` | `5242880` / `3` | Rotation limits, so a `nohup` log cannot grow without bound. |
 
 ## Choosing a model
 
@@ -141,6 +144,22 @@ python -m pytest -q
 ```
 
 They cover topic advancement and revisiting, stale-reply rejection, speaker balance over long runs, restart continuity, API validation and limits, load shedding at the client cap, all three deduplication tiers, feed retention, malformed-output handling, secret redaction, the verbatim parody notice, the no-script speaker panel, poll backoff, and the scroll behaviour.
+
+## Disk usage
+
+The wall is meant to run for months, so nothing it writes is allowed to grow without limit.
+
+Measured at roughly **2,600 messages a day**, then simulated forward with pruning active:
+
+| Day | Messages written | Rows kept | Database |
+|---|---|---|---|
+| 1 | 2,621 | 2,621 | 4.5 MB |
+| 30 | 78,630 | 5,000 | 6.1 MB |
+| 365 | 956,665 | 5,000 | **6.3 MB** |
+
+After each RSS refresh the transcript is trimmed to `TRANSCRIPT_RETENTION_MESSAGES`, along with the speaker history and any topic no retained message refers to. The active topic is never removed. Stored feed items are capped separately by `FEED_RETENTION_ITEMS`.
+
+Logging is quiet by design: per-request access logging is off, because a browser polling every couple of seconds otherwise accounts for about 95% of the log and several gigabytes a year. Under `systemd`, stderr goes to the journal, which rotates on its own; for `nohup`, set `LOG_FILE` and the log rotates at `LOG_MAX_BYTES` with `LOG_BACKUP_COUNT` kept.
 
 ## Running it as a service
 

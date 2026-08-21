@@ -753,7 +753,11 @@ class WebServer:
         return cls._json({"error": "bad_request", "detail": detail}, status=400)
 
     async def start(self, host: str, port: int) -> None:
-        self._runner = web.AppRunner(self._app)
+        # access_log=None: every browser polls every few seconds, and
+        # logging each request buries the interesting lines and grows the
+        # log file by gigabytes a year. Failures are still logged by the
+        # handlers themselves.
+        self._runner = web.AppRunner(self._app, access_log=None)
         await self._runner.setup()
         site = web.TCPSite(self._runner, host, port, backlog=self._backlog)
         await site.start()

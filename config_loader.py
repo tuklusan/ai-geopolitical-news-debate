@@ -54,6 +54,7 @@ DEFAULTS = {
     "TOPIC_TURNS_MAX": "12",
     "MAX_CLIENTS": "1024",
     "FEED_RETENTION_ITEMS": "500",
+    "TRANSCRIPT_RETENTION_MESSAGES": "5000",
     # Typing speed for the on-screen typewriter effect. The engine waits the
     # same length of time before asking for the next turn, so this also sets
     # how often the model is called.
@@ -92,6 +93,7 @@ class Config:
     topic_turns_max: int
     max_clients: int
     feed_retention_items: int
+    transcript_retention_messages: int
     typing_chars_per_second: float
 
     @property
@@ -117,6 +119,7 @@ class Config:
             "topic_turns": (self.topic_turns_min, self.topic_turns_max),
             "max_clients": self.max_clients,
             "feed_retention_items": self.feed_retention_items,
+            "transcript_retention_messages": self.transcript_retention_messages,
             "typing_chars_per_second": self.typing_chars_per_second,
         }
 
@@ -183,6 +186,7 @@ def load_config(env_file: str = "config/.env") -> Config:
     turns_max = _as_number(_get("TOPIC_TURNS_MAX"), "TOPIC_TURNS_MAX", int)
     max_clients = _as_number(_get("MAX_CLIENTS"), "MAX_CLIENTS", int)
     retention = _as_number(_get("FEED_RETENTION_ITEMS"), "FEED_RETENTION_ITEMS", int)
+    transcript_keep = _as_number(_get("TRANSCRIPT_RETENTION_MESSAGES"), "TRANSCRIPT_RETENTION_MESSAGES", int)
     typing_cps = _as_number(_get("TYPING_CHARS_PER_SECOND"), "TYPING_CHARS_PER_SECOND", float)
 
     if not 1 <= port <= 65535:
@@ -206,6 +210,10 @@ def load_config(env_file: str = "config/.env") -> Config:
         raise ConfigError(f"MAX_CLIENTS must be at least 1, got {max_clients}")
     if retention < 10:
         raise ConfigError(f"FEED_RETENTION_ITEMS must be at least 10, got {retention}")
+    if transcript_keep < 100:
+        raise ConfigError(
+            f"TRANSCRIPT_RETENTION_MESSAGES must be at least 100, got {transcript_keep}"
+        )
     if typing_cps <= 0:
         raise ConfigError(
             f"TYPING_CHARS_PER_SECOND must be greater than 0, got {typing_cps}"
@@ -235,5 +243,6 @@ def load_config(env_file: str = "config/.env") -> Config:
         topic_turns_max=turns_max,
         max_clients=max_clients,
         feed_retention_items=retention,
+        transcript_retention_messages=transcript_keep,
         typing_chars_per_second=typing_cps,
     )

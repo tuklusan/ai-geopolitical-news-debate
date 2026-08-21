@@ -61,6 +61,8 @@ MAX_TYPING_WAIT_SECONDS = 30.0
 
 # Stored feed items retained when the config does not say.
 DEFAULT_FEED_RETENTION = 500
+# Transcript messages retained. The browser renders far fewer.
+DEFAULT_TRANSCRIPT_RETENTION = 5000
 
 # Validation reasons that indicate the provider itself failed, as opposed to
 # the model returning something that was merely rejected.
@@ -249,6 +251,24 @@ class ConversationEngine:
             return
         if removed:
             logger.info("Pruned %d stored feed item(s), keeping the newest %d.", removed, keep)
+        await self._prune_transcript()
+
+    async def _prune_transcript(self) -> None:
+        """Bound the transcript and its dependent tables."""
+        keep = int(_cfg_num(self._cfg, "transcript_retention_messages",
+                            DEFAULT_TRANSCRIPT_RETENTION, int))
+        try:
+            removed = await self._db.prune_transcript(keep)
+        except Exception as exc:  # noqa: BLE001 - housekeeping must not crash the loop
+            logger.warning("Could not prune the transcript: %s", exc)
+            return
+        if any(removed.values()):
+            logger.info(
+                "Pruned transcript: %d message(s), %d speaker row(s), "
+                "%d topic(s), %d memory row(s); keeping the newest %d messages.",
+                removed["messages"], removed["speaker_history"],
+                removed["topics"], removed["topic_memory"], keep,
+            )
 
     async def _advance_topic(self) -> bool:
         """Move to the next queued item, or revisit the stalest stored one."""

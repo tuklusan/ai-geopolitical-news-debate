@@ -25,6 +25,9 @@ import asyncio
 import json
 import sqlite3
 import time
+
+# Never trim speaker history below the window the selector actually reads.
+SPEAKER_HISTORY_FLOOR = 50
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
@@ -545,6 +548,46 @@ class Database:
             )
             removed = cur.rowcount or 0
             if removed:
+                self._conn.commit()
+        return removed
+
+    async def prune_transcript(self, keep_messages: int, speaker_history: int = 200) -> dict:
+        """Bound every table that would otherwise grow for ever.
+
+        The wall is designed to run for months. Without this the transcript,
+        the speaker history, and one topic row per headline ever seen
+        accumulate indefinitely. Only the newest ``keep_messages`` are
+        retained; the browser renders far fewer and the API caps a page at
+        500, so nothing visible is lost.
+        """
+        keep_messages = max(1, int(keep_messages))
+        speaker_history = max(SPEAKER_HISTORY_FLOOR, int(speaker_history))
+        removed = {"messages": 0, "speaker_history": 0, "topics": 0, "topic_memory": 0}
+        async with self._lock:
+            cur = self._conn.execute(
+                "DELETE FROM messages WHERE id NOT IN ("
+                "  SELECT id FROM messages ORDER BY id DESC LIMIT ?)",
+                (keep_messages,),
+            )
+            removed["messages"] = cur.rowcount or 0
+            cur = self._conn.execute(
+                "DELETE FROM speaker_history WHERE seq NOT IN ("
+                "  SELECT seq FROM speaker_history ORDER BY seq DESC LIMIT ?)",
+                (speaker_history,),
+            )
+            removed["speaker_history"] = cur.rowcount or 0
+            # A topic is worth keeping only while it is active or a retained
+            # message still refers to it.
+            cur = self._conn.execute(
+                "DELETE FROM topics WHERE active = 0 AND id NOT IN ("
+                "  SELECT DISTINCT topic_id FROM messages WHERE topic_id IS NOT NULL)"
+            )
+            removed["topics"] = cur.rowcount or 0
+            cur = self._conn.execute(
+                "DELETE FROM topic_memory WHERE topic_id NOT IN (SELECT id FROM topics)"
+            )
+            removed["topic_memory"] = cur.rowcount or 0
+            if any(removed.values()):
                 self._conn.commit()
         return removed
 
