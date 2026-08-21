@@ -423,7 +423,9 @@ class TestHardening:
     def test_error_bodies_never_leak_the_api_key(self):
         from llm_client import LLMClient
 
-        secret = "nvapi-thisisnotarealkey"
+        # Deliberately not shaped like a real provider key, so repository
+        # secret scanners do not flag this fixture.
+        secret = "unit-test-credential-placeholder"
         client = LLMClient("http://x/v1", "m", secret)
         leaked = f'{{"error":"invalid key {secret}"}}'
         redacted = client._redact(leaked)
