@@ -236,8 +236,8 @@ defaults.
 
 | Variable | Default | Description |
 |---|---|---|
-| `LLM_BASE_URL` | `https://openrouter.ai/api/v1` | OpenAI-compatible API base URL |
-| `LLM_MODEL` | `z-ai/glm-5.2` | Model name sent in chat-completion requests. Served by OpenRouter; NVIDIA retired it 2026-08-21. See "Choosing a model" in README.md |
+| `LLM_BASE_URL` | `https://integrate.api.nvidia.com/v1` | OpenAI-compatible API base URL |
+| `LLM_MODEL` | `deepseek-ai/deepseek-v4-flash-0731` | Model name sent in chat-completion requests. Free on NVIDIA NIM. See "Choosing a model" in README.md |
 | `LLM_TEMPERATURE` | `0.55` | Sampling temperature |
 | `LLM_MAX_TOKENS` | `140` | Output token ceiling (high enough for a complete short response) |
 | `LLM_TIMEOUT_SECONDS` | `90` | Request timeout in seconds |
@@ -278,8 +278,8 @@ When the key is absent (or set to the placeholder
 ### Example `config/.env`
 
 ```
-LLM_BASE_URL=https://openrouter.ai/api/v1
-LLM_MODEL=z-ai/glm-5.2
+LLM_BASE_URL=https://integrate.api.nvidia.com/v1
+LLM_MODEL=deepseek-ai/deepseek-v4-flash-0731
 LLM_TEMPERATURE=0.55
 LLM_MAX_TOKENS=140
 LLM_TIMEOUT_SECONDS=90

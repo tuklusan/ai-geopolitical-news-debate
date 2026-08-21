@@ -34,8 +34,8 @@ except Exception:  # pragma: no cover - dotenv is a soft dependency fallback
 
 
 DEFAULTS = {
-    "LLM_BASE_URL": "https://openrouter.ai/api/v1",
-    "LLM_MODEL": "z-ai/glm-5.2",
+    "LLM_BASE_URL": "https://integrate.api.nvidia.com/v1",
+    "LLM_MODEL": "deepseek-ai/deepseek-v4-flash-0731",
     "LLM_TEMPERATURE": "0.55",
     # 400, not 140: glm-5.2 spends part of its budget on reasoning tokens
     # before the visible answer, and a tight cap truncates replies

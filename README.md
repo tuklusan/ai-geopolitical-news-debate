@@ -59,8 +59,8 @@ Settings come from the process environment first, then `config/.env`, then these
 
 | Setting | Default | What it does |
 |---|---|---|
-| `LLM_BASE_URL` | `https://openrouter.ai/api/v1` | Any OpenAI-compatible endpoint. Falls back to `BASE_URL`. |
-| `LLM_MODEL` | `z-ai/glm-5.2` | Model name. See [Choosing a model](#choosing-a-model). |
+| `LLM_BASE_URL` | `https://integrate.api.nvidia.com/v1` | Any OpenAI-compatible endpoint. Falls back to `BASE_URL`. |
+| `LLM_MODEL` | `deepseek-ai/deepseek-v4-flash-0731` | Model name. See [Choosing a model](#choosing-a-model). |
 | `LLM_API_KEY` | *(none)* | Required for generation. Falls back to `API_KEY`. Never logged or stored. |
 | `LLM_TEMPERATURE` / `LLM_MAX_TOKENS` | `0.55` / `400` | Sampling, and the token budget per request. |
 | `LLM_TIMEOUT_SECONDS` | `90` | Per-request timeout. |
@@ -76,23 +76,42 @@ Settings come from the process environment first, then `config/.env`, then these
 
 ## Choosing a model
 
-The wall ships pointed at **`z-ai/glm-5.2` on OpenRouter** — the same model the blog post was written with. Get a key at [openrouter.ai](https://openrouter.ai), put it in `LLM_API_KEY`, and you are done.
+The wall ships pointed at **`deepseek-ai/deepseek-v4-flash-0731` on NVIDIA NIM**, which is free to call. Get a key at [build.nvidia.com](https://build.nvidia.com), put it in `LLM_API_KEY`, and you are done. No paid account, no credit balance.
 
-> **Why OpenRouter and not NVIDIA?** The project was originally built against NVIDIA's endpoint, which is what `BUILD_NOTES.md` and the blog describe. NVIDIA **retired `z-ai/glm-5.2` on 21 August 2026** and it now returns `HTTP 410 Gone`; no GLM model remains there. OpenRouter still serves the identical model, so only the endpoint changed.
+> **The original model is gone.** This project was built with `z-ai/glm-5.2`, which is what the blog post and `BUILD_NOTES.md` describe. NVIDIA **retired it on 21 August 2026**; it now returns `HTTP 410 Gone` and no GLM model remains on that endpoint.
 
-Any OpenAI-compatible endpoint works — set `LLM_BASE_URL`, `LLM_MODEL`, and `LLM_API_KEY` and nothing else needs touching. Three things are worth knowing before you switch:
+### What actually works, measured
 
-**Leave `LLM_MAX_TOKENS` generous.** GLM-5.2 spends part of its budget on reasoning tokens before the visible reply. At the old default of 140 roughly a third of turns came back truncated mid-sentence and were discarded; at 400 truncation disappeared entirely. This does not make messages longer — the validator still enforces each persona's word limit — it just leaves room for the model to think first.
+Twenty candidate models on that endpoint were probed for liveness, then every survivor was run against this application's real persona prompts and scored with its own validator — so "pass" means the message would have been displayed, not discarded.
 
-**Avoid models that return `content: null`.** Some reasoning models put the whole answer in a separate `reasoning` field and leave `content` empty. Every turn then looks like a failure and the wall stays silent. `nvidia/llama-3.3-nemotron-super-49b-v1.5` behaves this way.
+Three rounds of all four personas, twelve attempts each:
 
-**Avoid very slow models.** Turns are generated one at a time, so a model that takes a minute to first token produces a wall that barely moves. Keep `LLM_TIMEOUT_SECONDS` near 90 so a stalled request is abandoned instead of blocking the conversation.
+| Model | Passed | Avg latency | Notes |
+|---|---|---|---|
+| **`deepseek-ai/deepseek-v4-flash-0731`** | **12/12** | 9.5s | Ships as the default. Holds all four voices; the only one that reliably gives Gronk his bureaucratic obsession. |
+| `mistralai/mistral-nemotron` | 12/12 | **1.0s** | Also flawless and ten times faster. Slightly blander; Gronk loses the paperwork fixation. Pick this if you want a livelier wall. |
+| `nvidia/nemotron-mini-4b-instruct` | 9/12 | 0.5s | Never produces Gronk's three lines, so you lose a quarter of the cast. |
+| `minimaxai/minimax-m3` | 8/12 | 9.9s | Rate-limited (`429`) under sustained use. |
+| `nvidia/nemotron-3-ultra-550b-a55b` | 5/12 | 11.4s | Overloaded (`503`), and ignores the word limits. |
+| `nvidia/nemotron-3-super-120b-a12b` | 2/12 | 5.5s | Leaks its reasoning into the reply: 237–276 words against a 45-word limit. |
 
-**`TYPING_CHARS_PER_SECOND` controls your bill.** The engine waits for a message to finish typing before requesting the next one, so the typing speed sets the request rate. At the default 25, a 250-character reply takes ten seconds to type and the next call is made ten seconds later — roughly a quarter of the requests you would make without it. Lower it to spend less; raise it for a livelier wall.
+Fourteen of the twenty candidates never got that far — most returned `404` (not available to the key), several timed out, and `openai/gpt-oss-20b` returned `content: null` with its answer in a separate `reasoning` field.
 
-Small models are a poor fit for this particular job: they hold the personas badly and repeat themselves. If you want cheap, `z-ai/glm-4.7-flash` is far better value than a 4B model.
+A sustained run of the default produced **14 messages with zero skipped turns and zero provider errors**.
 
-To see what your key can reach:
+### If you switch
+
+Any OpenAI-compatible endpoint works — set `LLM_BASE_URL`, `LLM_MODEL`, and `LLM_API_KEY`. Three things to watch:
+
+**Avoid models that return `content: null`.** Some reasoning models put the whole answer in a separate `reasoning` field. Every turn looks like a failure and the wall stays silent.
+
+**Watch for reasoning leaking into the reply.** A model that thinks out loud in `content` blows straight through the per-persona word limits and every turn is rejected. That is what happened to `nemotron-3-super-120b` above.
+
+**Leave `LLM_MAX_TOKENS` generous.** Models that reason before answering spend part of the budget doing it. At 140 roughly a third of replies were truncated mid-sentence; at the default 400, none were. This does not make messages longer — the validator still enforces each persona's word limit.
+
+**`TYPING_CHARS_PER_SECOND` controls request volume.** The engine waits for a message to finish typing before requesting the next, so typing speed sets the request rate. The default gives a turn roughly every 28 seconds, which keeps a free-tier key comfortable.
+
+To see what your key can actually reach:
 
 ```bash
 curl -s $LLM_BASE_URL/models -H "Authorization: Bearer $LLM_API_KEY"
