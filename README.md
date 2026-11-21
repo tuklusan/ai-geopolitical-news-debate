@@ -244,13 +244,3 @@ The first version of this application was written end to end by [ChatDev](https:
 This repository is published as a **read-only companion to the blog post**, not as a collaborative project. Issues, the wiki, and project boards are disabled, and pull requests from outside collaborators are not accepted.
 
 Please do not open bug reports or send patches — they will not be reviewed. You are welcome to fork the code and take it in your own direction, within the terms of the licence below. If you want to reach the author about it, the blog post's comment section is the place.
-
-## Licence
-
-Released under the **SANYALnet Labs Non-Commercial License** — see [LICENSE](LICENSE).
-
-Non-commercial use, modification, and distribution are permitted. Commercial use, and use of this code for training or fine-tuning AI/ML models, are prohibited without written permission.
-
-> Based on original work by Supratim Sanyal of SANYALnet Labs.
-
-Not affiliated with, endorsed by, or connected to France 24, NVIDIA, any government or institution, or any rights holder of any character referenced in parody.
